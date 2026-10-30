@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>显卡里也有一个仓库</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    color: #2B2620;
+  }
+  .page {
+    width: 210mm; height: 297mm; padding: 22mm 20mm 16mm 20mm;
+    page-break-after: always; position: relative; overflow: hidden;
+    background: #FBF7EF;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  .pnum { position: absolute; right: 20mm; bottom: 9mm; font-size: 9pt; color: #9A8F80; letter-spacing: .05em; }
+  .tag  { display: inline-block; font-size: 9pt; letter-spacing: .12em; color: #A9552A;
+          border: 1px solid #D8B79E; padding: 3px 10px; border-radius: 2px; margin-bottom: 14mm; }
+
+  h1 { font-size: 30pt; line-height: 1.35; font-weight: 700; letter-spacing: -.01em; }
+  h2 { font-size: 19pt; line-height: 1.5; font-weight: 700; margin-bottom: 6mm; }
+  h3 { font-size: 12.5pt; font-weight: 700; margin: 7mm 0 2.5mm; color: #2F5D50; }
+  p  { font-size: 11.5pt; line-height: 1.95; margin-bottom: 4mm; }
+  .lead { font-size: 13pt; line-height: 1.9; color: #4A4238; }
+  .small { font-size: 10pt; line-height: 1.8; color: #6B6157; }
+  b { color: #A9552A; }
+  em { font-style: normal; background: linear-gradient(transparent 62%, #F2DFA8 62%); padding: 0 1px; }
+
+  .rule { height: 1px; background: #DCD2C2; margin: 7mm 0; }
+  .box { border: 1px solid #DCD2C2; padding: 6mm 7mm; background: #FFFDF8; margin: 5mm 0; }
+  .box.warm { background: #F7EADA; border-color: #E0C6AA; }
+
+  table { width: 100%; border-collapse: collapse; margin: 4mm 0 5mm; font-size: 10.5pt; }
+  th { text-align: left; font-weight: 700; padding: 2.5mm 3mm; border-bottom: 1.5px solid #2B2620; font-size: 10pt; }
+  td { padding: 2.5mm 3mm; border-bottom: 1px solid #E4DACA; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.hl td { background: #F7EADA; }
+
+  .cover-mid { margin-top: 26mm; }
+  .cover-sub { font-size: 14pt; line-height: 1.9; color: #5A5148; margin-top: 8mm; max-width: 145mm; }
+  .cover-meta { position: absolute; left: 20mm; bottom: 20mm; font-size: 10pt; color: #7A7065; line-height: 2; }
+
+  .kicker { font-size: 10.5pt; letter-spacing: .2em; color: #A9552A; margin-bottom: 5mm; }
+  .big { font-size: 26pt; font-weight: 700; line-height: 1.4; }
+  .quote { font-size: 12pt; line-height: 1.95; border-left: 3px solid #A9552A; padding-left: 5mm; color: #4A4238; }
+
+  .steps { display: flex; gap: 3.5mm; margin: 5mm 0 3mm; }
+  .step { flex: 1; border: 1px solid #DCD2C2; background: #FFFDF8; padding: 4mm 3.5mm; }
+  .step .n { font-size: 9pt; color: #A9552A; letter-spacing: .1em; margin-bottom: 2mm; }
+  .step .t { font-size: 11pt; font-weight: 700; margin-bottom: 1.5mm; }
+  .step .d { font-size: 9.5pt; line-height: 1.7; color: #6B6157; }
+
+  .two { display: flex; gap: 6mm; }
+  .two > div { flex: 1; }
+
+  .err { border-left: 3px solid #A9552A; padding: 3mm 0 3mm 5mm; margin-bottom: 5mm; }
+  .err .h { font-weight: 700; font-size: 11.5pt; margin-bottom: 1.5mm; }
+  .err .b { font-size: 10.5pt; line-height: 1.8; color: #5A5148; }
+</style>
+</head>
+<body>
+
+<!-- 1 封面 -->
+<div class="page">
+  <div class="tag">KV CACHE 显存测量 · 通俗版</div>
+  <div class="cover-mid">
+    <h1>显卡里<br>也有一个仓库</h1>
+    <div class="cover-sub">
+      我们花了一天，想在 8 GB 显存里量清楚一件事：<br>
+      你多问一个字，到底多吃掉多少地方。<br>
+      以及，我一开始是怎么把它量错的。
+    </div>
+  </div>
+  <div class="cover-meta">
+    配合「货架 / 样品入库 / 样品出库」那套仓库数据来读<br>
+    2026 年 10 月 30 日 · kv-cache-lab v0.2.0
+  </div>
+</div>
+
+<!-- 2 你的仓库 -->
+<div class="page">
+  <h2>先说你那个仓库</h2>
+  <p class="lead">你库里的数据长这样：三个仓——晴空仓、苍鹰仓、星空仓；十个货架，编号 HUOJIA0001 到 HUOJIA0010；货架上有样品，编号 PUTIN00002 这样。</p>
+  <p>每条入库记录都记三个数：这次入库多少、历史上累计出库多少、现在架上还剩多少。听起来很稳，对吧？</p>
+
+  <div class="box warm">
+    <div class="small" style="color:#A9552A;letter-spacing:.1em;margin-bottom:2mm">样品入库管理.csv · 其中一行</div>
+    <table style="margin:0">
+      <tr><th>批次</th><th>商品</th><th>货架</th><th class="num">入库</th><th class="num">累计出库</th><th class="num">在架库存</th></tr>
+      <tr class="hl"><td>PUTIN00021</td><td>品牌A-洗发水</td><td>HUOJIA0001</td><td class="num">1</td><td class="num">24</td><td class="num"><b>−23</b></td></tr>
+    </table>
+  </div>
+
+  <p>进了 1 件，出了 24 件，架上剩 <b>−23 件</b>。</p>
+  <p><em>负库存。这三个数字不可能同时是真的。</em></p>
+
+  <div class="box">
+    <p style="margin:0"><b>按规矩算：</b>入库 − 累计出库 = 在架库存。1 − 24 = −23。算术一点都没错。</p>
+    <p style="margin:2mm 0 0" class="small">错的是那个 24——它属于别的批次，却被记在了这一批头上。于是账面上，这一批货"负数存在"。</p>
+  </div>
+
+  <p>这不是你填错了那么简单。它意味着：<b>记账的那本，和实际的货，用了两套口径，而且没人发现。</b></p>
+  <p>我今天干的活，本质就是在跟同一个毛病打架——只不过战场从仓库换到了显卡里。</p>
+  <div class="pnum">2</div>
+</div>
+
+<!-- 3 显卡=库房 -->
+<div class="page">
+  <h2>显卡就是一间 8 GB 的库房</h2>
+  <p class="lead">你那台电脑的显卡有 8188 MiB 显存。把它当成一间仓库，里面只有三种东西。</p>
+
+  <h3>一、常驻样品（模型本身）</h3>
+  <p>就是货架上一直放着的那批货。大约 <b>1005 MiB</b>。不管你跟它说一个字还是一万字，它都占这么多，一动不动。</p>
+
+  <h3>二、临时缓存区（KV cache）</h3>
+  <p>这个才是主角。你每问一句话，模型要把"刚才说了什么"记下来，才能在后面接着答。记在哪？就记在这片临时区里。</p>
+  <p><em>你问得越长，这片区就越大——而且是老老实实地按长度成比例地变大。</em></p>
+
+  <h3>三、过道和叉车（CUDA 上下文）</h3>
+  <p>大约 <b>105 MiB</b>。不管放多少货，这个固定开销都在，挪不走。权重加上过道，实测截距是 <b>1110 MiB</b> 左右——这就是不管你怎么量化、都省不掉的那一部分。</p>
+
+  <div class="rule"></div>
+  <p>所以「KV cache 量化」是什么？就是把缓存区里的东西<b>换个包装</b>：原来每个数字用 2 字节装（叫 f16），改成用 1 个字节出头装（叫 q8_0）。内容一样，占的地方差不多减半。</p>
+  <p class="small">卖模型的人常说"我们把缓存减了一半"。这句话本身没错。问题是——它减的只是中间那片临时区，两头（样品和过道）一分钱不减。</p>
+  <div class="pnum">3</div>
+</div>
+
+<!-- 4 要回答的问题 -->
+<div class="page">
+  <h2>那到底要量什么？</h2>
+  <p class="lead">就问一句话：<b>每多一个 token，缓存区多吃掉多少显存？</b></p>
+  <p class="small">token 你可以理解成"字"或者"半个词"。这里按"每 1024 个 token"来算，单位是 KiB。</p>
+
+  <h3>这个数其实能算出来</h3>
+  <p>用这个模型的尺寸套公式：2（要同时记"问"和"答"）× 28 层 × 2 个注意力头 × 128 维 × 2 字节，得出 <b>理论上每 token 28 KiB</b>。</p>
+
+  <h3>但实测总是比理论多一点</h3>
+  <p>多出来的那部分，我们管它叫「过路费」。这个仓库真正想说的就是这笔过路费——因为它决定了：你以为省了一半，实际上到底省了多少。</p>
+
+  <div class="box">
+    <p style="margin:0"><b>打个比方：</b>搬家公司说"我们箱子比别家小一半，所以便宜一半"。可你要付的不只是箱子，还有车、油、司机、过路费。箱子真小了一半，但账单没少一半。</p>
+  </div>
+  <p>我们要做的，就是把这张账单拆开，看清楚哪一笔是箱子，哪一笔是过路费。</p>
+  <div class="pnum">4</div>
+</div>
+
+<!-- 5 四步测法 -->
+<div class="page">
+  <h2>怎么量：四步，跟盘点一模一样</h2>
+
+  <div class="steps">
+    <div class="step"><div class="n">第 一 步</div><div class="t">清场</div><div class="d">把模型赶出显存，并确认它真走了。</div></div>
+    <div class="step"><div class="n">第 二 步</div><div class="t">盘点</div><div class="d">连读五次取中位数，算库里原有占用。</div></div>
+    <div class="step"><div class="n">第 三 步</div><div class="t">进货</div><div class="d">按指定长度装进来，读最高点。</div></div>
+    <div class="step"><div class="n">第 四 步</div><div class="t">相减</div><div class="d">前后一减，就是这批货的成本。</div></div>
+  </div>
+
+  <svg viewBox="0 0 620 152" width="100%" style="margin:6mm 0 1mm">
+    <defs>
+      <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M2 1L8 5L2 9" fill="none" stroke="#8C8375" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </marker>
+    </defs>
+    <text x="10" y="16" font-size="10" fill="#7A7065">显存占用</text>
+    <line x1="60" y1="132" x2="600" y2="132" stroke="#C9BFAE" stroke-width="1"/>
+    <line x1="60" y1="20" x2="60" y2="132" stroke="#C9BFAE" stroke-width="1"/>
+
+    <path d="M60 98 L152 98" stroke="#2F5D50" stroke-width="2.5" fill="none"/>
+    <text x="66" y="90" font-size="10" fill="#2F5D50">空闲值（仓库原有）</text>
+
+    <path d="M152 98 L176 98 L210 44 L512 44 L540 98" stroke="#A9552A" stroke-width="2.5" fill="none"/>
+    <text x="222" y="36" font-size="10" fill="#A9552A">加载后（取最高点）</text>
+
+    <line x1="210" y1="44" x2="210" y2="132" stroke="#D8CBB6" stroke-width="1" stroke-dasharray="3 3"/>
+    <line x1="512" y1="44" x2="512" y2="132" stroke="#D8CBB6" stroke-width="1" stroke-dasharray="3 3"/>
+
+    <path d="M568 44 L568 98" stroke="#2B2620" stroke-width="1.5" marker-start="url(#a1)" marker-end="url(#a1)"/>
+    <text x="568" y="36" font-size="10" fill="#2B2620" text-anchor="middle">差额</text>
+
+    <text x="208" y="148" font-size="9.5" fill="#7A7065">开始加载</text>
+    <text x="490" y="148" font-size="9.5" fill="#7A7065">加载完成、稳定</text>
+  </svg>
+
+  <p class="small">右边那个双向箭头，就是"这次加载自己吃了多少"：上面那条线是进货后的高度，下面那条是进货前的。</p>
+
+  <p>然后换五个长度各做一遍：<b>2048 → 4096 → 8192 → 16384 → 32768</b>（每次翻一倍）。把五个差额连起来看斜率，就是"每 token 吃多少"。</p>
+
+  <div class="box">
+    <p style="margin:0"><b>第三步为什么要取最高点？</b>因为装载的时候，仓库会短暂堆到最高。那个最高水位才是真实的占用。取平均等于把最高的那几箱货漏算了——而这正好是我一开始犯的错，第四页会讲。</p>
+  </div>
+
+  <div class="box">
+    <p style="margin:0"><b>为什么要用减法，不用绝对值？</b>因为库房不是我们一家在用。桌面上开着浏览器、微信、播放器，它们占的显存时时刻刻在变。这一天里，两次测量之间桌面占用就差了 <b>1078 MiB</b>。绝对值全废，差值才能把这点抵消掉。</p>
+  </div>
+  <div class="pnum">5</div>
+</div>
+
+<!-- 6 结果 -->
+<div class="page">
+  <h2>量出来的两个结果</h2>
+
+  <h3>结果一：每 token 的成本</h3>
+  <table>
+    <tr><th>包装方式</th><th class="num">理论该多少</th><th class="num">实测多少</th><th class="num">过路费</th></tr>
+    <tr><td>f16（每个数 2 字节）</td><td class="num">28.00 KiB</td><td class="num"><b>29.99 KiB</b></td><td class="num">+1.99</td></tr>
+    <tr><td>q8_0（每个数 1 字节出头）</td><td class="num">14.88 KiB</td><td class="num"><b>16.5–17.3 KiB</b></td><td class="num">+1.66…+2.43</td></tr>
+  </table>
+  <p>两行都高出理论。f16 那一行很稳，误差不到 0.03；q8_0 那一行只能给区间，因为它对"基线怎么取"敏感（换成固定基线，斜率就从 17.3 掉到 16.5）。<b>报一位小数是假精度，所以这里给区间。</b></p>
+
+  <h3>结果二：8192 处凭空多出一块地</h3>
+  <p>如果只是"每 token 固定吃一点"，五个点应该连成一条直线。但实际不是。在 <b>8192</b> 这个位置上，曲线跳了一下，凭空多占了约 <b>67 MiB</b>。</p>
+  <p>67 MiB 是什么概念？相当于你仓库里突然被划走了一块地，而且这块地跟你放多少货无关——只要超过 8192，它就一直在那儿。</p>
+
+  <svg viewBox="0 0 620 270" width="100%" style="margin:4mm 0 0">
+    <line x1="70" y1="230" x2="600" y2="230" stroke="#C9BFAE" stroke-width="1"/>
+    <line x1="70" y1="210" x2="70" y2="40" stroke="#C9BFAE" stroke-width="1"/>
+
+    <text x="30" y="214" font-size="9" fill="#8C8375">1000</text>
+    <text x="30" y="160" font-size="9" fill="#8C8375">1400</text>
+    <text x="30" y="106" font-size="9" fill="#8C8375">1800</text>
+    <text x="30" y="52" font-size="9" fill="#8C8375">2200</text>
+    <text x="26" y="30" font-size="9" fill="#8C8375">MiB</text>
+
+    <line x1="70" y1="214" x2="600" y2="214" stroke="#EFE7D8" stroke-width="1"/>
+    <line x1="70" y1="160" x2="600" y2="160" stroke="#EFE7D8" stroke-width="1"/>
+    <line x1="70" y1="106" x2="600" y2="106" stroke="#EFE7D8" stroke-width="1"/>
+    <line x1="70" y1="52" x2="600" y2="52" stroke="#EFE7D8" stroke-width="1"/>
+
+    <path d="M70 191.6 L195 183.8 L320 158.4 L445 126 L570 61.2" fill="none" stroke="#A9552A" stroke-width="2.5"/>
+    <circle cx="70" cy="191.6" r="3.5" fill="#A9552A"/><circle cx="195" cy="183.8" r="3.5" fill="#A9552A"/>
+    <circle cx="320" cy="158.4" r="3.5" fill="#A9552A"/><circle cx="445" cy="126" r="3.5" fill="#A9552A"/>
+    <circle cx="570" cy="61.2" r="3.5" fill="#A9552A"/>
+
+    <path d="M70 195.2 L195 190.1 L320 173.9 L445 153.9 L570 117.6" fill="none" stroke="#2F5D50" stroke-width="2.5"/>
+    <circle cx="70" cy="195.2" r="3.5" fill="#2F5D50"/><circle cx="195" cy="190.1" r="3.5" fill="#2F5D50"/>
+    <circle cx="320" cy="173.9" r="3.5" fill="#2F5D50"/><circle cx="445" cy="153.9" r="3.5" fill="#2F5D50"/>
+    <circle cx="570" cy="117.6" r="3.5" fill="#2F5D50"/>
+
+    <path d="M195 183.8 L320 168.6" stroke="#B9AE9C" stroke-width="1.5" stroke-dasharray="4 3" fill="none"/>
+    <path d="M320 168.6 L320 158.4" stroke="#A9552A" stroke-width="1.5" marker-end="url(#a1)" fill="none"/>
+
+    <rect x="74" y="50" width="196" height="48" fill="#FFFDF8" stroke="#E0C6AA" stroke-width="1"/>
+    <text x="86" y="70" font-size="10" fill="#A9552A">8192 处跳了一下</text>
+    <text x="86" y="88" font-size="10" fill="#5A5148">凭空多占约 67 MiB</text>
+    <path d="M270 94 L314 154" stroke="#B9AE9C" stroke-width="1" stroke-dasharray="3 3" fill="none"/>
+
+    <text x="52" y="245" font-size="9.5" fill="#5A5148">2048</text>
+    <text x="177" y="245" font-size="9.5" fill="#5A5148">4096</text>
+    <text x="302" y="245" font-size="9.5" fill="#5A5148">8192</text>
+    <text x="430" y="245" font-size="9.5" fill="#5A5148">16384</text>
+    <text x="550" y="245" font-size="9.5" fill="#5A5148">32768</text>
+    <text x="560" y="262" font-size="9" fill="#8C8375">上下文长度</text>
+
+    <rect x="80" y="14" width="9" height="3" fill="#A9552A"/><text x="95" y="19" font-size="9.5" fill="#5A5148">f16</text>
+    <rect x="130" y="14" width="9" height="3" fill="#2F5D50"/><text x="145" y="19" font-size="9.5" fill="#5A5148">q8_0</text>
+  </svg>
+
+  <p class="small">那条虚线，是从 4096 那把尺子直接延伸出去的"按理该到这儿"。实际的点比它高了约 70 MiB——就是那块被凭空划走的地。两条线越往上岔得越开，因为 f16 每 token 本来就比 q8_0 贵将近一倍。</p>
+  <div class="pnum">6</div>
+</div>
+
+<!-- 7 为什么难 -->
+<div class="page">
+  <h2>为什么这么难量：三本账</h2>
+  <p class="lead">仓库里其实记着三本账，而它们从来不完全对得上。</p>
+
+  <table>
+    <tr><th style="width:26%">账本</th><th style="width:37%">记的是什么</th><th>毛病</th></tr>
+    <tr>
+      <td><b>盘点账</b><br><span class="small">nvidia-smi 读数</span></td>
+      <td>这一刻显卡里被占了多少</td>
+      <td>会漂。8 秒内上下晃 32 MiB；十分钟能涨 150 MiB</td>
+    </tr>
+    <tr>
+      <td><b>系统账</b><br><span class="small">/api/ps 的 size_vram</span></td>
+      <td>模型自己说它占了多少，精确到字节</td>
+      <td>不含过道和叉车那 105 MiB</td>
+    </tr>
+    <tr>
+      <td><b>手填标签</b><br><span class="small">--kv-bytes</span></td>
+      <td>我写的"这次用的是 f16"</td>
+      <td><b>它只是我写的字，不是证据</b></td>
+    </tr>
+  </table>
+
+  <p>偏差不会凭空产生，它就长在这三本账的缝里。</p>
+
+  <h3>最典型的一种：账实不符</h3>
+  <p>我以为服务端在用 f16，就按 f16 写了标签。可实际上服务端早就被改成 q8_0 了。于是我算出来的斜率是 19.0——<b>它既不是 f16 的理论倍数，也不是 q8_0 的理论倍数</b>。</p>
+  <p><em>这跟你那行 PUTIN00021 一模一样：三个数字各说各话，凑在一起就成了 −23。</em></p>
+
+  <div class="box warm">
+    <p style="margin:0" class="small">那次是怎么发现的？因为它和更早一轮 q8_0 的实测值，五个点全部吻合在 20 MiB 以内。数字太像了，反而说明我贴错了签。</p>
+  </div>
+  <div class="pnum">7</div>
+</div>
+
+<!-- 8 我犯了什么错 -->
+<div class="page">
+  <h2>我到底错在哪</h2>
+  <p class="lead">四个错，都是我自己挖出来、自己修的。用仓库的话讲一遍。</p>
+
+  <div class="err">
+    <div class="h">错一：把"最高水位"记成了"平均水位"</div>
+    <div class="b">进货的时候，仓库会短暂堆到最高。我一开始记的是"平均堆多高"，等于把最高的那几箱货漏算了。大长度下少算了 300 到 600 MiB——<b>看起来就像"缓存变便宜了"</b>。现在改成记最高点。</div>
+  </div>
+
+  <div class="err">
+    <div class="h">错二：拿"昨天的库存"判断"今天的货走没走"</div>
+    <div class="b">"模型卸载干净了吗"这件事，我原本是看显存降到某个固定数值以下。可桌面一涨，那个数就永远降不到。结果连报三次"模型可能没卸载"，而实际上模型早就走了。<b>只有 Ollama 自己知道货还在不在</b>，所以改成直接问它。</div>
+  </div>
+
+  <div class="err">
+    <div class="h">错三：价签是自己写的，不是系统打的</div>
+    <div class="b">就是上面那本"手填标签"。现在脚本会去读服务端自己的启动记录，两边对不上就<b>直接拒绝测量</b>，宁可不出数，也不出一份贴错签的数。</div>
+  </div>
+
+  <div class="err">
+    <div class="h">错四：我一度认定那个台阶是假的，差点把它删掉</div>
+    <div class="b">一次进货夹在两次盘点之间，如果这中间库房底线自己在动，相减出来的数就会跟着偏。那一轮 q8_0 的底线确实往下滑了 26 MiB，所以我第一反应是：<b>8192 那个台阶会不会是漂移造出来的假象？</b>于是换一种算法——固定基线重新拟合——台阶还在，<b>+53.2 MiB，位置没变</b>。f16 那一轮底线只动了 1 MiB，台阶照样是 67.1。所以这个台阶是真的。</div>
+  </div>
+
+  <p class="small">这件事的教训不是"我算错了"，而是<b>差一点把真发现当成误差删掉</b>。怀疑一个结论、然后设计一个能把它杀死的检验——这一步比直接相信它更值钱，也比直接删掉它更值钱。</p>
+
+  <p class="small">另外还有四个更细的，写进了代码审查记录：台阶检验在小样本下会无条件判"有台阶"、夹逼基线在缺一个点时会静默丢掉最大长度那个点、漂移探针点混进拟合、某一档读数全失败时会沿用上一档的基线。这些不影响已经发布的数字，但都记着。</p>
+  <div class="pnum">8</div>
+</div>
+
+<!-- 9 复现 -->
+<div class="page">
+  <h2>最硬的一条：重测一遍</h2>
+  <p class="lead">错都修完之后，我把 q8_0 那五个长度重新测了一遍。这次桌面比上次多占了 <b>1078 MiB</b>——相当于旁边凭空多开了一家店。</p>
+
+  <table>
+    <tr><th>上下文长度</th><th class="num">2048</th><th class="num">4096</th><th class="num">8192</th><th class="num">16384</th><th class="num">32768</th></tr>
+    <tr><td>第一次测</td><td class="num">1139</td><td class="num">1177</td><td class="num">1297</td><td class="num">1445</td><td class="num">1714</td></tr>
+    <tr><td>重测一遍</td><td class="num">1138</td><td class="num">1173</td><td class="num">1301</td><td class="num">1441</td><td class="num">1716</td></tr>
+    <tr class="hl"><td><b>差多少</b></td><td class="num">−1</td><td class="num">−4</td><td class="num">+4</td><td class="num">−4</td><td class="num">+2</td></tr>
+  </table>
+
+  <p class="big" style="margin-top:6mm">五个点，全部落在 4 MiB 以内。</p>
+
+  <p>而库房底的绝对位置挪了 1078 MiB。也就是说：<em>减法这一招，把一个多 GB 的环境变化，和一套测量方法的改动，一起吸收掉了，回来只差 4 MiB。</em></p>
+
+  <p>这是这一整天里最值钱的一个结果。它证明的不是模型，而是<b>方法能站得住</b>——你换个时间、换个桌面状态、换个测法，同样的五个数还会回来。</p>
+
+  <div class="box">
+    <p style="margin:0"><b>反过来说：</b>如果没有这一步，前面所有结论都只能说"在某天下午、某台机器上、某一种测法下成立"。那不是一个可以拿去用的数，那是一次运气。</p>
+  </div>
+  <div class="pnum">9</div>
+</div>
+
+<!-- 10 结论 -->
+<div class="page">
+  <h2>所以，这一整天量出了什么</h2>
+
+  <h3>一、缓存确实按长度老实变大，但比理论贵一点点</h3>
+  <p>每 token 实测比理论多约 <b>2 KiB</b>。f16 是理论 28、实测 30；q8_0 是理论 14.9、实测 17.3。<b>这笔过路费跟包装方式关系不大</b>，换了包装它还在。</p>
+
+  <h3>二、8192 是个坎</h3>
+  <p>超过 8192，会凭空多占约 <b>67 MiB</b>，而且只要超过就一直占着。这条对 8 GB 卡的用户最实际：你以为还剩很多，其实要先扣掉这一块。</p>
+
+  <h3>三、别人的"省一半"，你要自己折算</h3>
+  <p>q8_0 确实把缓存区从 28 压到 16.5–17.3，省了大约四成。但如果有人只拿缓存区那一项算给你看"省了 50%"，那是在只算箱子、不算车钱。</p>
+
+  <div class="rule"></div>
+
+  <h3>最后一句，说人话</h3>
+  <p class="quote">
+    你问得越长，显卡就被吃得越多。这件事有账可算，但账必须拿减法算，而且三本账要对齐。<br><br>
+    我今天第二大的收获是量出了 29.99 这个数。最大的收获是：<b>我一度怀疑 8192 那个台阶是我自己量错造出来的，先换了种算法验一遍，它还在；后来又把整组重测一遍，它还在。</b>
+  </p>
+
+  <p class="big" style="font-size:19pt;margin:9mm 0 0;color:#2F5D50">账要对齐，减法要同时。</p>
+  <p class="small" style="margin-top:3mm">这两个条件少一个，你量出来的就不是显存，是当天的运气。</p>
+
+  <p class="small" style="margin-top:6mm">想自己验：仓库里有原始数据 CSV、89 项自动检查、还有一个脚本，跑 <span style="font-family:Consolas,monospace">python tests/test_fit.py</span> 就能把这份报告里每个数字重算一遍，不需要显卡。</p>
+  <div class="pnum">10</div>
+</div>
+
+</body>
+</html>

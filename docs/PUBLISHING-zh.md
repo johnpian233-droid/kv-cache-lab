@@ -15,7 +15,7 @@
 ```bash
 cd /d <你的仓库目录>
 
-# 1) 算术自检：不用显卡，41 项全过才说明 README 的每个数字都能从 data/ 复现
+# 1) 算术自检：不用显卡，89 项全过才说明 README 的每个数字都能从 data/ 复现
 py tests/test_fit.py
 
 # 2) 语法自检
@@ -25,22 +25,30 @@ py -m py_compile scripts/ollama_probe.py
 期望输出：
 
 ```
-all 41 checks passed - every number in README.md is reproducible from data/.
+all 89 checks passed - every number in README.md is reproducible from data/.
 ```
 
 ```bash
 # 3) 检查有没有把本地路径、用户名、令牌漏进去
-grep -rnE "Administrator|C:\\Users|ghp_|gho_|D:[\\/]" . --include=*.py --include=*.md --include=*.yml --include=*.cff
+#    --exclude 掉本文件：它自己含这些模式，否则永远报两条假阳性
+#    必须包含 *.csv 和 *.html —— 漏了这两种格式，正是上一次路径泄漏的原因
+grep -rnE "C:\\\\Users|/Users/|ghp_|gho_|D:\\\\" . \
+  --include=*.py --include=*.md --include=*.yml --include=*.cff \
+  --include=*.csv --include=*.html --include=*.txt \
+  --exclude=PUBLISHING-zh.md
 ```
 
 期望：**没有任何输出。** 有输出就先把那一行改掉再继续。
+
+CSV 里的路径列写成 `%LOCALAPPDATA%\Ollama\server.log` 这种占位形式，脚本已经自动做这件事
+（`server_kv_type()` 会把 `$LOCALAPPDATA` 和 `~` 换成占位符再写盘）。
 
 ```bash
 # 4) 看一眼到底会提交哪些文件（.git 和 __pycache__ 不该出现）
 git status --short
 ```
 
-最终应该正好是这 16 项：
+最终应该正好是这些文件：
 
 ```
 .gitattributes
@@ -53,12 +61,19 @@ README.md
 README_zh.md
 data/ollama_probe_f16.csv
 data/ollama_probe_q8_0.csv
+data/ollama_probe_q8_0_replication.csv
 docs/PUBLISHING-zh.md
 docs/kv-cache-report-zh.pdf
+docs/social-preview.png
+docs/warehouse-story-zh.html
+docs/warehouse-story-zh.pdf
 requirements.txt
 scripts/ollama_probe.py
 tests/test_fit.py
 ```
+
+这里**故意不写死数量**。之前写的是"正好 15 项"，结果后来加了 4 个文件没人改，读者一核对就
+发现文档在骗人。清单可以数，数字会烂。
 
 ---
 
@@ -220,7 +235,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > that is wrong.
 >
 > Everyone quotes "50% off" for q8_0 KV cache. I wanted the number for my own card, so I wrote a
-> ~400-line stdlib-only probe that loads a model at five context lengths and fits VRAM delta vs
+> ~880-line stdlib-only probe that loads a model at five context lengths and fits VRAM delta vs
 > `num_ctx`.
 >
 > RTX 4060 Laptop (8188 MiB), Qwen2.5-1.5B, Ollama 0.40.6. The straightforward fit gives:
@@ -233,16 +248,16 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > The residuals are −17, −24, +36, +19, −15. They do not scatter, they **arc**, and the peak sits
 > exactly on 8192. Add a one-time level step there and SSE drops from 2731 to **2.0**
 > (F(1,2) = 2748 against a 5% critical value of 18.513). The slopes move to **29.99** and **17.31**.
-> The step model predicts the 32K measurement to within **0.1 MiB**; the straight line was off by
+> The step model reproduces the 32K measurement to within **0.1 MiB** in-sample; the straight line was off by
 > 14.6, and that error *is* the step it refused to model.
 >
 > Why it matters: a 67 MiB one-time allocation, divided by the largest context, becomes
 > **2.10 KiB/token** — exactly how much the naive slope is inflated (32.11 − 29.99 = 2.12). So half
 > of the "fixed ~4.1 KiB/token overhead over theory" that benchmarks like this one love to quote is
-> not per-token cost at all. It is an allocation step, annualised by the regression. The real
+> not per-token cost at all. It is an allocation step, amortised by the regression. The real
 > per-token overhead is **~2.0 KiB**.
 >
-> Net: q8_0 saves **42.3%** of the KV cache and **19.6% of total VRAM at 32K**. The second number is
+> Net: q8_0 saves **42-45%** of the KV cache and **19.5-20.8% of total VRAM at 32K**. The second number is
 > the one you quote to a customer.
 >
 > What I did not do, and say so in the README: one load per point (no repeats, so the error bars are
@@ -273,10 +288,10 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 >
 > 为什么这事重要：8192 处那 67 MiB 的一次性分配，除以最大上下文就是 **2.10 KiB/token**，
 > 而这正好是单直线被抬高的量（32.11 − 29.99 = 2.12）。所以市面上常引用的
-> "固定约 4.1 KiB/token 过路费"，**一半根本不是每 token 成本**，是回归把台阶摊成了年化。
+> "固定约 4.1 KiB/token 过路费"，**一半根本不是每 token 成本**，是回归把台阶摊成了摊销。
 > 真正的每 token 开销约 **2.0 KiB**。
 >
-> 修正后：q8_0 对 KV cache 本身省 **42.3%**，对 32K 总显存省 **19.6%**——要报价，用后一个。
+> 修正后：q8_0 对 KV cache 本身省 **42–45%**，对 32K 总显存省 **19.5–20.8%**——要报价，用后一个。
 >
 > 我没搞定的也写在 README 里：每个点只加载一次（没有纯重复，误差棒偏乐观）、
 > q8_0 输出质量没测、**台阶机制不明**（列了三个候选，一个都没确认）。
@@ -302,7 +317,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 
 ### 机制二：每次新增数据 = 一次 Release = 一次再分发
 
-v0.2 补 q4_0 → 发个 Release → 回原帖补一条"更新：q4_0 实测出来了，落在 9.5–10.3 这个
+v0.3 补 q4_0 → 发个 Release → 回原帖补一条"更新：q4_0 实测出来了，落在 9.5–10.3 这个
 区间里（或不在，那也是结果）"。**注意别说"模型预测对了"**——README 已经明确从原则上拒绝
 给 q4_0 点值，说"预测对了"会把那个立场变回营销话术。同一个话题可以合理地出现三次，
 而不是刷屏。
@@ -368,5 +383,5 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf --title "v0.1.0 — first m
 **最后一条不是技术，是纪律：**
 
 发布的价值不在"发出去"这个动作，在于你被迫把每个数字都算到能自证。
-`tests/test_fit.py` 那 41 项检查，就是你以后敢在任何人面前说"这个数你可以自己验"的底气。
+`tests/test_fit.py` 那 89 项检查，就是你以后敢在任何人面前说"这个数你可以自己验"的底气。
 没有它，仓库只是一份 PPT；有了它，才是一份可以被陌生人审计的证据。

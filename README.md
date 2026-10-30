@@ -30,17 +30,17 @@ this file meaning measured slope minus textbook slope — is an artifact of that
 This repo contains the script that produces the numbers, the raw CSVs it produced, and the
 derivation of both models, so that every claim can be recomputed rather than trusted.
 
-No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
+No frameworks, no dependencies. One script, three CSVs, and the arithmetic.
 
 ## News
 
 - **2026.10.30 v0.2.0 — the q8_0 grid was re-measured, and it reproduced to 4 MiB.** A second
   pass over the same five contexts, with median-sampled idles, peak-sampled loads, unload
   confirmed through `/api/ps` instead of a VRAM threshold, and the KV type read out of the
-  server's own startup environment, lands on 19.08 → **19.09** KiB/token and +67.1 → **+59.8** MiB
+  server's own startup environment, lands on 19.08 → **19.17** KiB/token and +56.2 → **+59.8** MiB
   at the same step location — on a desktop carrying **1078 MiB** more VRAM. The runner's own
   `size_vram` is now recorded per row as an independent cross-check (it agrees with the delta to
-  a constant ~105 MiB), and `--kv-bytes` can no longer relabel a run the server disagrees with.
+  a constant 102-112 MiB), and `--kv-bytes` can no longer relabel a run the server disagrees with.
   One honest gap: **f16 was not re-run**, because the server's `OLLAMA_KV_CACHE_TYPE` is still
   q8_0. Self-checks 83 → 89. No number in the existing analysis changed.
 - **2026.10.30 v0.1.3 — one claim withdrawn, one column found.** `loaded_mib − delta_mib`
@@ -62,7 +62,7 @@ No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
 - **2026.10.30 v0.1.0 — first public release.** Two configurations (f16, q8_0) across five
   context lengths each. A straight-line fit gives 32.11 / 19.08 KiB/token, then fails a
   residual check: modelling a one-time step at 8192 fits the same data to ±1 MiB and moves the
-  slopes to **29.99 / 17.31**. 89 self-checks recompute every number quoted here without a GPU. 15-page
+  slopes to **29.99 / 17.31**. 59 self-checks recompute every number quoted here without a GPU. 15-page
   Chinese write-up with charts and derivations (`docs/kv-cache-report-zh.pdf`).
 - **Roadmap** — q4_0 actually measured (currently refused on principle, see
   `### The third rung`), repeated points at every grid position for a real error bar,
@@ -155,7 +155,7 @@ num_ctx    f16 implied idle    q8_0 implied idle
 The f16 run sits on a baseline that moves **1 MiB** across the whole grid. The q8_0 run moves
 **26 MiB**, monotonically. Whether the desktop was genuinely releasing VRAM or the reading was
 drifting does not matter for what follows: the subtraction puts all of it into `delta_mib`, and
-26 MiB is five times larger than the q8_0 residual (5.8 MiB) it was supposed to be testing against.
+26 MiB is about 4.5x the largest q8_0 residual (5.8 MiB) it was supposed to be testing against.
 
 So fit q8_0 both ways — trust each idle reading, or assume one baseline for the run:
 
@@ -357,8 +357,12 @@ more VRAM in use at the idle floor.
 | difference | −1 | −4 | +4 | −4 | +2 |
 
 Every point lands within 4 MiB of the original, on a desktop that had moved by more than a
-gigabyte in absolute VRAM. The straight-line slope is 19.08 KiB/token before and 19.09 after;
-the step is +67.1 MiB before and +59.8 after, at the same location.
+gigabyte in absolute VRAM. Scored on the per-point baseline in the table above, the straight-line
+slope is 19.08 before and **19.17** after, and the step is +56.2 before and **+59.8** after, at the
+same location. Scored on the bracketed baseline (`delta_bracket_mib` — the mean of the idle
+readings either side of each load) the same run gives **19.09** and **+65.0**. The two columns
+differ by 0.08 KiB/token and 5 MiB, and neither is "the" answer: quote the column you actually
+fitted, and do not mix a slope from one with a step from the other.
 
 That is the strongest evidence in this repository, and it is evidence for the *method* rather
 than for the model: a delta absorbs a 1078 MiB change in the desktop and a change of measurement
@@ -381,7 +385,7 @@ Two defects the replication found, both in the tooling rather than the data:
 - `--kv-bytes` does not configure anything; it only **labels**. A run executed while the server
   was on q8_0, but passed `--kv-bytes 2`, was recorded as f16 with a slope of 19.0 KiB/token —
   1.28x the q8_0 theory and 0.68x the f16 theory. It was caught only because it matched the older
-  q8_0 run to within 4 MiB. The script now reads `OLLAMA_KV_CACHE_TYPE` out of the server's
+  q8_0 run to within 21 MiB at all five contexts. The script now reads `OLLAMA_KV_CACHE_TYPE` out of the server's
   startup log and refuses to write a CSV when the label disagrees.
 
 ### Raw measurements
@@ -422,7 +426,7 @@ precisions but with **different heights** (+67.1 vs +56.2 MiB). A mechanism keye
 | KV type | slope | 32K VRAM on Qwen2.5-1.5B | status |
 |---|---|---|---|
 | f16 | 29.99 KiB/token + 67.1 MiB step | 2132.0 MiB | measured |
-| q8_0 | 17.31 + 56.2 MiB step | 1714.0 MiB | measured |
+| q8_0 | 16.5-17.3 + 53-56 MiB step | 1688-1716 MiB | measured (baseline-sensitive) |
 | q4_0 | 7.88 theory, toll unknown | — | **not predicted** |
 
 An earlier draft of this file did predict q4_0: theory 7.88 plus the "same 4.1 toll" gives
@@ -568,7 +572,8 @@ For each `num_ctx`, in order:
    taking a median here shaves 300–600 MiB off the high contexts while looking exactly like a
    smaller KV cost. That mistake was made and caught during v0.2 development.
 4. **loaded − idle is the measurement.** Cross-check it against the runner's own `size_vram`
-   from `/api/ps`. The two differ by a constant ~105 MiB of CUDA context; if the gap is *not*
+   from `/api/ps`. The two differ by 102-112 MiB of CUDA context (spread 10 MiB across five
+   points); if the gap is *not*
    constant, the baseline moved during the load and the row is suspect.
 
 Always compare **deltas**, never absolute VRAM. Desktop usage drifted by 1078 MiB between the

@@ -9,5 +9,5 @@
 #
 # tests/test_fit.py is also dependency-free and runs with plain `python tests/test_fit.py`.
 #
-# If you prefer pytest, `pytest tests/` works too: every check is a plain assert helper
-# that reports one line per fact, so both runners accept it.
+# Do NOT run `pytest tests/` - the checks live inside main() and pytest collects nothing.
+# Use `python tests/test_fit.py`, which exits 0 when every claim still holds.

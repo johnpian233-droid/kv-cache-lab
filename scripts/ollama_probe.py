@@ -156,7 +156,14 @@ def server_kv_type():
         # The last "server config" line is the running instance's environment.
         hits = re.findall(r"OLLAMA_KV_CACHE_TYPE:([A-Za-z0-9_]+)", text)
         if hits:
-            return hits[-1].lower(), path
+            # Report the location without the machine owner's name in it: this string is
+            # written into the CSV, and that CSV gets committed to a public repository.
+            shown = path
+            for prefix, token in ((os.environ.get("LOCALAPPDATA", ""), "%LOCALAPPDATA%"),
+                                  (os.path.expanduser("~"), "~")):
+                if prefix:
+                    shown = shown.replace(prefix, token)
+            return hits[-1].lower(), shown
     return None, None
 
 

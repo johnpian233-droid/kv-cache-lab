@@ -18,7 +18,7 @@ abstract: >-
   idles, peak-sampled loads, unload confirmed through the Ollama API rather than a VRAM
   threshold, and the KV cache type read from the server's own environment - on a desktop
   carrying 1078 MiB more VRAM. Every one of the five deltas landed within 4 MiB of the
-  original, the slope moved 19.08 to 19.09 KiB/token, and the step moved 67.1 to 59.8 MiB
+  original, the slope moved 19.08 to 19.17 KiB/token, and the step moved 56.2 to 59.8 MiB
   at the same location. The f16 grid was not re-run, because that would require restarting
   the server with a different OLLAMA_KV_CACHE_TYPE.
   Scope: memory only, no throughput, no output quality, no repeated measurements per grid
