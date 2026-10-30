@@ -522,6 +522,7 @@ from the desktop is only reflected in the idle reading, and each configuration w
 | `num_ctx` | requested context length |
 | `loaded_mib` | absolute VRAM after load (for debugging only) |
 | `delta_mib` | **the measurement** — loaded minus idle |
+| `idle_mib` | the baseline that `delta_mib` was differenced against. Added in v0.1.3; the two historical CSVs predate it, so recover it as `loaded_mib - delta_mib` |
 | `theory_kv_mib` | pure KV per textbook formula, same row |
 | `load_sec` | load wall time |
 | `model`, `ollama_version`, `kv_cache_type`, `kv_bytes_per_elem` | provenance |

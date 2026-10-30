@@ -460,6 +460,7 @@ CUDA 版本没写进 CSV；桌面的背景负载只体现在那次空闲读数�
 | `num_ctx` | 请求的上下文长度 |
 | `loaded_mib` | 加载后的绝对显存（仅用于排查） |
 | `delta_mib` | **测量值** —— 加载后减空闲 |
+| `idle_mib` | `delta_mib` 相减时用的那个基线。v0.1.3 才有；两份历史 CSV 早于这一列，用 `loaded_mib − delta_mib` 反推 |
 | `theory_kv_mib` | 同一行按教科书公式算出的纯 KV |
 | `load_sec` | 加载耗时 |
 | `model`、`ollama_version`、`kv_cache_type`、`kv_bytes_per_elem` | 出处信息 |
