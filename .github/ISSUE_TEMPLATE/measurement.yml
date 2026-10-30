@@ -56,9 +56,22 @@ body:
     attributes:
       label: Measured slope
       description: Copied from the `[fit]` line the script prints.
-      placeholder: "32.11 +/- 1.24 KiB/token"
+      placeholder: "29.99 KiB/token (plain line: 32.11 +/- 1.24)"
     validations:
       required: true
+
+  - type: input
+    id: step
+    attributes:
+      label: Step, if any
+      description: |
+        Copied from the `[step]` block the script prints — location, height, and F.
+        Write "none" if the script said the step does not earn its parameter. This is
+        the field most reports will leave blank and the one that decides whether the
+        step is a property of Ollama or a property of this one machine.
+      placeholder: "+67.1 MiB at num_ctx=8192, F=2748"
+    validations:
+      required: false
 
   - type: textarea
     id: csv

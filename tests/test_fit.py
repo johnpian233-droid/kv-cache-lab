@@ -68,8 +68,8 @@ def main():
     fa, fb, fr2 = probe.linfit(fx, fy)
     qa, qb, qr2 = probe.linfit(qx, qy)
 
-    check("f16 slope = 32.11 KiB/token", fa * 1024, 32.11, LOOSE)
-    check("q8_0 slope = 19.08 KiB/token", qa * 1024, 19.08, LOOSE)
+    check("f16 plain-line slope = 32.11", fa * 1024, 32.11, LOOSE)
+    check("q8_0 plain-line slope = 19.08", qa * 1024, 19.08, LOOSE)
     check("f16 intercept = 1119 MiB", fb, 1119.0, 0.5)
     check("q8_0 intercept = 1118 MiB", qb, 1118.0, 0.5)
     check("f16 R^2 = 0.9956", fr2, 0.9956, 0.0001)
@@ -97,11 +97,40 @@ def main():
     check("theory q4_0 = 7.88 KiB/token", t_q4, 7.88, 0.006)
 
     # ---------------------------------------------------------------- the toll
-    check("f16 toll = +4.11", fa * 1024 - t_f16, 4.11, LOOSE)
-    check("q8_0 toll = +4.20", qa * 1024 - t_q8, 4.20, LOOSE)
+    check("f16 plain-line toll = +4.11", fa * 1024 - t_f16, 4.11, LOOSE)
+    check("q8_0 plain-line toll = +4.20", qa * 1024 - t_q8, 4.20, LOOSE)
     check("tolls agree within 0.15", abs((fa * 1024 - t_f16) - (qa * 1024 - t_q8)), 0.0, 0.15)
     check("f16 theory outside 95% CI", 1.0 if (fa - fhalf) * 1024 > t_f16 else 0.0, 1.0, 0)
     check("q8_0 theory outside 95% CI", 1.0 if (qa - qhalf) * 1024 > t_q8 else 0.0, 1.0, 0)
+
+    # ---------------------------------------------------------------- the step
+    # A straight line through five monotone points always fits well, so R^2 is not
+    # evidence that a line is the right model. Fit the alternative and let F decide.
+    fst = probe.detect_step(fx, fy)
+    qst = probe.detect_step(qx, qy)
+
+    check("f16 step detected at num_ctx", fst["step_at"], 8192, 0)
+    check("q8_0 step detected at num_ctx", qst["step_at"], 8192, 0)
+    check("f16 slope with step = 29.99", fst["slope"] * 1024, 29.99, LOOSE)
+    check("f16 step size = +67.1 MiB", fst["step"], 67.1, 0.2)
+    check("q8_0 slope with step = 17.31", qst["slope"] * 1024, 17.31, LOOSE)
+    check("q8_0 step size = +56.2 MiB", qst["step"], 56.2, 0.2)
+    check("f16 step beats line at 5% (F > 18.5)", 1.0 if fst["f"] > 18.5 else 0.0, 1.0, 0)
+    check("q8_0 step beats line at 5% (F > 18.5)", 1.0 if qst["f"] > 18.5 else 0.0, 1.0, 0)
+    check("f16 steady-state slope = 30.00", fst["slope_hi"] * 1024, 30.00, 0.01)
+    check("q8_0 steady-state slope = 17.30", qst["slope_hi"] * 1024, 17.30, 0.01)
+
+    # the step, expressed per token of the largest context, is what the naive
+    # straight line was reporting as per-token cost
+    f_step_per_tok = fst["step"] / 32768 * 1024
+    check("f16 step per 32K token = +2.10", f_step_per_tok, 2.10, 0.02)
+    check("inflation = step per token", (fa * 1024) - (fst["slope"] * 1024), f_step_per_tok, 0.05)
+
+    # ---------------------------------------------------------------- corrected toll
+    f_toll = fst["slope"] * 1024 - t_f16
+    q_toll = qst["slope"] * 1024 - t_q8
+    check("f16 toll with step model = +2.00", f_toll, 2.00, LOOSE)
+    check("q8_0 toll with step model = +2.42", q_toll, 2.42, LOOSE)
 
     # ---------------------------------------------------------------- ratios
     check("measured/theory f16 = 1.15x", fa * 1024 / t_f16, 1.15, LOOSE)
@@ -115,18 +144,35 @@ def main():
     v128_f = fb + fa * 131072
     v128_q = qb + qa * 131072
 
-    check("32K f16 from fit = 2146.6 MiB", v32_f, 2146.6, 0.1)
-    check("32K q8_0 from fit = 1728.4 MiB", v32_q, 1728.4, 0.1)
-    check("32K saving = 418.2 MiB", v32_f - v32_q, 418.2, 0.1)
-    check("32K saving = 418 MiB by raw data", fy[-1] - qy[-1], 418.0, 0.1)
-    check("KV cache saving = 40.6%", (fa - qa) / fa * 100, 40.6, LOOSE)
-    check("total VRAM saving @32K = 19.6%", (v32_f - v32_q) / fy[-1] * 100, 19.6, LOOSE)
-    check("total VRAM saving @128K = 31.9%", (v128_f - v128_q) / v128_f * 100, 31.9, LOOSE)
+    check("32K f16 plain line = 2146.6 MiB", v32_f, 2146.6, 0.1)
+    check("32K q8_0 plain line = 1728.4 MiB", v32_q, 1728.4, 0.1)
+    check("32K saving by plain line = 418.2 MiB", v32_f - v32_q, 418.2, 0.1)
+    check("32K saving by raw data = 418 MiB", fy[-1] - qy[-1], 418.0, 0.1)
+
+    # the same numbers under the step model; 32K is above the step so it pays it once
+    s32_f = fst["intercept"] + fst["slope"] * 32768 + fst["step"]
+    s32_q = qst["intercept"] + qst["slope"] * 32768 + qst["step"]
+    s128_f = fst["intercept"] + fst["slope"] * 131072 + fst["step"]
+    s128_q = qst["intercept"] + qst["slope"] * 131072 + qst["step"]
+
+    check("32K f16 line+step = 2131.9 MiB", s32_f, 2131.9, 0.1)
+    check("32K q8_0 line+step = 1716.1 MiB", s32_q, 1716.1, 0.1)
+    check("step model predicts 32K f16 to 0.1 MiB", abs(s32_f - fy[-1]), 0.1, 0.06)
+    check("step model beats plain line at 32K (f16)", 1.0 if abs(s32_f - fy[-1]) < abs(v32_f - fy[-1]) else 0.0, 1.0, 0)
+
+    # the numbers the README actually quotes
+    check("KV cache saving = 42.3%", (fst["slope"] - qst["slope"]) / fst["slope"] * 100, 42.3, LOOSE)
+    check("total VRAM saving @32K = 19.6%", (fy[-1] - qy[-1]) / fy[-1] * 100, 19.6, LOOSE)
+    check("total VRAM saving @128K = 32.6%", (s128_f - s128_q) / s128_f * 100, 32.6, LOOSE)
 
     # ---------------------------------------------------------------- prediction
-    q4_slope = t_q4 + (fa * 1024 - t_f16)
-    check("predicted q4_0 slope = 12.0", q4_slope, 12.0, 0.1)
-    check("predicted q4_0 @32K = 1503 MiB", fb + q4_slope / 1024 * 32768, 1503.0, 1.0)
+    # q4_0 is deliberately not predicted as a point value: the toll differs between
+    # the two precisions already measured (2.00 vs 2.42), so a third precision is a
+    # range, not a number. All the README commits to is that range.
+    q4_lo = t_q4 + f_toll
+    q4_hi = t_q4 + q_toll
+    check("q4_0 slope range low = 9.9", q4_lo, 9.9, 0.05)
+    check("q4_0 slope range high = 10.3", q4_hi, 10.3, 0.05)
 
     # ---------------------------------------------------------------- extrapolation
     def per_token(layers, kv_heads, head_dim):

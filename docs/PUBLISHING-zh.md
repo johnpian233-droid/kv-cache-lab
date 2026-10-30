@@ -177,7 +177,7 @@ gh repo edit --add-topic kv-cache,quantization,vram,ollama,llm-inference,consume
 ```cmd
 gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
   --title "v0.1.0 — first measurement" ^
-  --notes "Two configurations (f16, q8_0) x five context lengths. Slopes 32.11 +/- 1.24 and 19.08 +/- 1.05 KiB/token; a fixed ~4.1 KiB/token toll over theory. 15-page Chinese write-up attached."
+  --notes "Two configurations (f16, q8_0) x five context lengths. A straight line gives 32.11 +/- 1.24 and 19.08 +/- 1.05 KiB/token, then fails a residual check: a one-time 67.1 MiB step at 8192 fits the same data to +/-1 MiB (F=2748) and moves the slopes to 29.99 / 17.31. Per-token overhead over theory is ~2.0 KiB, not 4.1. 15-page Chinese write-up attached."
 ```
 
 **为什么**：有人只下载 PDF，不会 clone 仓库。Release 也是**后续每一次"再分发"的载体**——
@@ -216,49 +216,73 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 
 ### 3.2 英文帖模板（Reddit / HN）
 
-> **Title:** Measured what KV cache quantization actually saves on an 8GB laptop GPU — 41% off the cache, 20% off the bill
+> **Title:** Fitting one line through a KV cache benchmark gave me 32 KiB/token. The residuals say
+> that is wrong.
 >
 > Everyone quotes "50% off" for q8_0 KV cache. I wanted the number for my own card, so I wrote a
 > ~400-line stdlib-only probe that loads a model at five context lengths and fits VRAM delta vs
 > `num_ctx`.
 >
-> RTX 4060 Laptop (8188 MiB), Qwen2.5-1.5B, Ollama 0.40.6:
+> RTX 4060 Laptop (8188 MiB), Qwen2.5-1.5B, Ollama 0.40.6. The straightforward fit gives:
 >
 > - f16: **32.11 ± 1.24 KiB/token** (theory 28.00)
 > - q8_0: **19.08 ± 1.05 KiB/token** (theory 14.88)
 >
-> So q8_0 saves 40.6% of the KV cache, but only **19.6% of total VRAM at 32K** — because there's a
-> fixed **~4.1 KiB/token** of overhead (mask buffer, f16 copy of quantized K/V, allocator
-> fragmentation) that quantization can't touch.
+> R² = 0.9956. Looks great. It is wrong.
 >
-> Two honest caveats, both stated in the README: the 95% CI is wide (df=3, and f16's theory sits
-> just 0.18 KiB/token outside it), and I did **not** test output quality. The toll claim rests on
-> replication across two precisions, not on the CI.
+> The residuals are −17, −24, +36, +19, −15. They do not scatter, they **arc**, and the peak sits
+> exactly on 8192. Add a one-time level step there and SSE drops from 2731 to **2.0**
+> (F(1,2) = 2748 against a 5% critical value of 18.5). The slopes move to **29.99** and **17.31**.
+> The step model predicts the 32K measurement to within **0.1 MiB**; the straight line was off by
+> 14.6, and that error *is* the step it refused to model.
 >
-> Repo: <link> — includes the raw CSVs and `tests/test_fit.py`, which re-derives every number in
-> the README without a GPU.
+> Why it matters: a 67 MiB one-time allocation, divided by the largest context, becomes
+> **2.10 KiB/token** — exactly how much the naive slope is inflated (32.11 − 29.99 = 2.12). So half
+> of the "fixed ~4.1 KiB/token overhead over theory" that benchmarks like this one love to quote is
+> not per-token cost at all. It is an allocation step, annualised by the regression. The real
+> per-token overhead is **~2.0 KiB**.
+>
+> Net: q8_0 saves **42.3%** of the KV cache and **19.6% of total VRAM at 32K**. The second number is
+> the one you quote to a customer.
+>
+> What I did not do, and say so in the README: one load per point (no repeats, so the error bars are
+> optimistic), no output-quality test, and **I do not know what causes the step** — three candidate
+> mechanisms are listed, none confirmed.
+>
+> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 59 assertions that re-derive every number in the
+> README without a GPU, including the F test.
 
 **注意最后一段**：把"我的结论脆弱在哪"主动写在帖子里。这是唯一能让 HN 那群人不喷你的方式，
 也是唯一能让人相信其余部分的理由。
 
 ### 3.3 中文帖模板（V2EX / 即刻）
 
-> **标题：** 用一张 8G 笔记本显卡，把"KV cache 量化省一半"这句话量了一遍
+> **标题：** 用一张 8G 笔记本显卡量 KV cache，结果发现这类测试普遍在算错一笔账
 >
-> 各大厂都在卷 KV cache，宣传口径是"省 50%"。我不服，就自己写了套控制变量法：
-> 五个上下文长度、每组两次独立测量、最小二乘拟合，把显存账算到底。
+> 各大厂都在卷 KV cache，宣传口径是"省 50%"。我不服，写了个纯标准库的小脚本：
+> 五个上下文长度、逐点加载、最小二乘拟合，把显存账算到底。
 >
-> 结果（RTX 4060 Laptop + Qwen2.5-1.5B）：
-> - q8_0 对 **KV cache 本身**省 40.6% —— 厂商没骗你
-> - 但对 **32K 上下文的总显存**只省 19.6% —— 因为有一笔约 **4.1 KiB/token** 的固定开销
->   （attention mask、量化 K/V 还原成 f16 的临时副本、分配器碎片），量化打折不了
-> - 两个精度下这笔"过路费"分别是 +4.11 和 +4.20，几乎一模一样，这才说明它是固定成本
+> 一开始特别顺利，R² = 0.9956：
+> - f16：**32.11 ± 1.24 KiB/token**（理论 28.00）
+> - q8_0：**19.08 ± 1.05 KiB/token**（理论 14.88）
 >
-> 有几个地方我自己也没搞定：4096→8192 那个台阶是什么机制，只有数据没有源码确证；
-> q8_0 的输出质量我没测；置信区间很宽（自由度只有 3），f16 的理论值只在区间外 0.18。
+> 然后我去看了残差：−17、−24、+36、+19、−15。这不是散的，是一条**弧**，峰顶正落在 8192。
+> 在那个位置加一个一次性台阶，SSE 从 2731 掉到 **2.0**（F(1,2) = 2748，5% 临界值 18.5），
+> 斜率变成 **29.99** 和 **17.31**。台阶模型能把 32K 的实测值预测到 **0.1 MiB** 以内，
+> 而单直线差了 14.6——那个误差正好就是它拒绝建模的台阶。
 >
-> 脚本约 400 行、纯标准库、不需要 PyTorch。仓库里还有 `tests/test_fit.py`，
-> 不插显卡就能把 README 里每个数字复算一遍。地址：<link>
+> 为什么这事重要：8192 处那 67 MiB 的一次性分配，除以最大上下文就是 **2.10 KiB/token**，
+> 而这正好是单直线被抬高的量（32.11 − 29.99 = 2.12）。所以市面上常引用的
+> "固定约 4.1 KiB/token 过路费"，**一半根本不是每 token 成本**，是回归把台阶摊成了年化。
+> 真正的每 token 开销约 **2.0 KiB**。
+>
+> 修正后：q8_0 对 KV cache 本身省 **42.3%**，对 32K 总显存省 **19.6%**——要报价，用后一个。
+>
+> 我没搞定的也写在 README 里：每个点只加载一次（没有纯重复，误差棒偏乐观）、
+> q8_0 输出质量没测、**台阶机制不明**（列了三个候选，一个都没确认）。
+>
+> 脚本约 400 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，59 项断言，
+> 不插显卡就能把 README 里每个数字复算一遍，包括那个 F 检验。地址：<link>
 
 ### 3.4 发帖纪律
 

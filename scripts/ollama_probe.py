@@ -186,6 +186,98 @@ def fit_uncertainty(xs, ys, a, b):
     return se_a, se_b, t * se_a, t * se_b, df
 
 
+def _solve(matrix, rhs):
+    """Gaussian elimination with partial pivoting on a tiny square system."""
+    n = len(matrix)
+    m = [row[:] + [rhs[i]] for i, row in enumerate(matrix)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(col + 1, n):
+            factor = m[r][col] / m[col][col]
+            for c in range(col, n + 1):
+                m[r][c] -= factor * m[col][c]
+    out = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        acc = m[r][n] - sum(m[r][c] * out[c] for c in range(r + 1, n))
+        out[r] = acc / m[r][r]
+    return out
+
+
+def stepfit(xs, ys, step_at):
+    """Least squares with a one-time level shift at `step_at`:
+
+        y = b + a*x + c * 1[x >= step_at]
+
+    Why this exists. A straight line drawn through a curve that contains a
+    single step does not fail loudly - it quietly spreads the step across
+    every token and reports it as per-token cost. Both the slope and the
+    "cost over theory" come out too high by exactly (step / largest_ctx).
+
+    The F statistic compares this model against the plain line. With n points
+    the step model spends one extra parameter, so df goes from n-2 to n-3.
+
+    Returns a dict, or None when there are too few points on either side.
+    """
+    n = len(xs)
+    if n < 4:
+        return None
+    left = [y for x, y in zip(xs, ys) if x < step_at]
+    right = [y for x, y in zip(xs, ys) if x >= step_at]
+    if len(left) < 1 or len(right) < 2:
+        return None
+
+    design = [[1.0, x, 1.0 if x >= step_at else 0.0] for x in xs]
+    k = 3
+    ata = [[sum(design[i][p] * design[i][q] for i in range(n)) for q in range(k)]
+           for p in range(k)]
+    aty = [sum(design[i][p] * ys[i] for i in range(n)) for p in range(k)]
+    coef = _solve(ata, aty)
+    if coef is None:
+        return None
+
+    intercept, slope, step = coef
+    sse_step = sum((ys[i] - sum(coef[p] * design[i][p] for p in range(k))) ** 2
+                   for i in range(n))
+    df_step = n - k
+    lin_a, lin_b, _ = linfit(xs, ys)
+    sse_lin = sum((y - (lin_a * x + lin_b)) ** 2 for x, y in zip(xs, ys))
+
+    if df_step < 1 or sse_step <= 0:
+        f_stat = float("inf")
+    else:
+        mse_step = sse_step / df_step
+        f_stat = (sse_lin - sse_step) / mse_step
+
+    # slope estimated from the points at or above the step only
+    hx = [x for x in xs if x >= step_at]
+    hy = [y for x, y in zip(xs, ys) if x >= step_at]
+    mx = sum(hx) / len(hx)
+    my = sum(hy) / len(hy)
+    sxx_h = sum((x - mx) ** 2 for x in hx)
+    slope_hi = (sum((x - mx) * (y - my) for x, y in zip(hx, hy)) / sxx_h
+                if sxx_h > 0 else float("nan"))
+
+    return {
+        "step_at": step_at, "slope": slope, "intercept": intercept,
+        "step": step, "sse": sse_step, "df": df_step, "f": f_stat,
+        "sse_lin": sse_lin, "df_lin": n - 2, "slope_hi": slope_hi,
+        "n_left": len(left), "n_right": len(right),
+    }
+
+
+def detect_step(xs, ys):
+    """Pick the step location that explains the data best, among interior points."""
+    best = None
+    for x in xs[1:-1]:
+        r = stepfit(xs, ys, x)
+        if r and (best is None or r["sse"] < best["sse"]):
+            best = r
+    return best
+
+
 def infer_kv_bytes():
     t = os.environ.get("OLLAMA_KV_CACHE_TYPE", "").strip().lower()
     return KV_BYTES.get(t), t
@@ -371,6 +463,29 @@ def main():
     else:
         print("       WARNING: poor linearity. Check for leftover VRAM from other apps.")
     print("=" * 72)
+
+    # A high R^2 does not mean the line is the right model: five monotone points
+    # will look linear whatever the truth is. So fit the alternative explicitly.
+    st = detect_step(xs, ys)
+    if st:
+        print()
+        print("-" * 72)
+        print(f"[step] testing a one-time level shift, best location num_ctx={st['step_at']}")
+        print(f"       y = {st['intercept']:.0f} + {st['slope'] * 1024:.2f} KiB/token x N"
+              f" + {st['step']:+.1f} MiB  for N >= {st['step_at']}")
+        print(f"       SSE {st['sse_lin']:.1f} -> {st['sse']:.1f}   df {st['df_lin']} -> {st['df']}"
+              f"   F(1,{st['df']}) = {st['f']:.1f}")
+        if st["slope_hi"] == st["slope_hi"]:
+            print(f"       slope from points >= {st['step_at']} only: "
+                  f"{st['slope_hi'] * 1024:.2f} KiB/token")
+        if st["f"] > 18.5:
+            spread = (st["slope"] - st["slope_hi"]) * 1024
+            print("       -> the step wins. The straight-line slope is inflated by")
+            print(f"          {spread:+.2f} KiB/token, i.e. the step divided by the largest")
+            print("          context. Do not quote the straight-line slope as per-token cost.")
+        else:
+            print("       -> the step does not earn its parameter. Straight line stands.")
+        print("-" * 72)
 
     print()
     print("Extrapolate to real models (f16 KV, formula 2*layers*kv_heads*head_dim*2B)")

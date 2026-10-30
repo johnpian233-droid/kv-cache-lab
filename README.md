@@ -1,9 +1,9 @@
 # kv-cache-lab
 
-> **Scope note (2026.10.30)**: this repository measures **memory only**, on **one GPU** with
-> **one model**. It is not a throughput benchmark and it does not evaluate output quality.
-> The method generalizes; the numbers do not. Read `## What this repo is not` before citing
-> anything here.
+> **Scope note (2026.10.30)**: this repository measures **memory only**, on **one GPU**, with
+> **one model**, at **one load per point**. It is not a throughput benchmark and it does not
+> evaluate output quality. The method generalizes; the numbers do not. Read
+> `## What this repo is not` before citing anything here.
 
 **English** | [中文](README_zh.md)
 
@@ -12,27 +12,33 @@
 `kv-cache-lab` is a one-script lab that answers a single question with arithmetic instead of
 marketing: **how much VRAM does KV cache quantization actually save on a consumer GPU?**
 
-Vendors advertise "50% off". On an 8 GB laptop GPU the measured answer is **40.6% off the KV
-cache** and **19.6% off the total VRAM bill at 32K context**. The difference is a fixed
-per-token overhead — roughly **4.1 KiB/token** — that quantization cannot discount. This repo
-contains the script that produces the numbers, the raw CSVs it produced, and the derivation
-of the fit, so that every claim can be recomputed rather than trusted.
+Vendors advertise "50% off". On an 8 GB laptop GPU the measured answer is **19.6% off the
+total VRAM bill at 32K context**, of which **42.3% comes off the KV cache itself**. The
+difference is overhead that quantization cannot discount: about **2.0 KiB/token** of running
+cost, plus a **one-time ~67 MiB allocation step** at 8192.
+
+That step is the actual finding, and it is the part most KV benchmarks get wrong. Fitting one
+line across the grid yields 32.11 KiB/token. The data rejects that model — **F = 2748 against
+a critical value of 18.5** — in favour of **29.99 KiB/token plus a 67.1 MiB step**, and the
+gap between the two is exactly the step divided by the largest context. Half of the commonly
+quoted "fixed 4.1 KiB/token toll" is an artifact of that mistake.
+
+This repo contains the script that produces the numbers, the raw CSVs it produced, and the
+derivation of both models, so that every claim can be recomputed rather than trusted.
 
 No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
 
-本仓库用一次控制变量的实测回答一个问题：**在消费级显卡上，KV cache 量化到底省多少显存？**
-厂商说"省一半"。在 8 GB 笔记本显卡上，实测是 **KV cache 省 40.6%、32K 上下文的总显存省 19.6%**。
-差额来自一笔量化打折不了的固定开销——约 **4.1 KiB/token**。仓库里有产出这些数字的脚本、
-脚本跑出的原始 CSV、以及拟合的推导过程，每个结论都可以自己复算，不必相信。
-
 ## News
 
-- **2026.10.30 v0.1.0 — first public release.** Two configurations measured (f16, q8_0) across
-  five context lengths each; least-squares fit with 95% confidence intervals; 15-page Chinese
-  write-up with charts and derivations (`docs/kv-cache-report-zh.pdf`).
-- **Roadmap** — q4_0 measured (currently predicted only), output-quality comparison at q8_0,
-  two extra points at 6144 / 24576 to tighten the confidence interval, and the mechanism behind
-  the 4096→8192 step. Contributions welcome; see `## Contributing`.
+- **2026.10.30 v0.1.0 — first public release.** Two configurations (f16, q8_0) across five
+  context lengths each. A straight-line fit gives 32.11 / 19.08 KiB/token, then fails a
+  residual check: modelling a one-time step at 8192 fits the same data to ±1 MiB and moves the
+  slopes to **29.99 / 17.31**. 55 self-checks recompute every number without a GPU. 15-page
+  Chinese write-up with charts and derivations (`docs/kv-cache-report-zh.pdf`).
+- **Roadmap** — q4_0 actually measured (currently refused on principle, see
+  `### The third rung`), repeated points at every grid position for a real error bar,
+  output-quality comparison at q8_0, and the mechanism behind the 8192 step.
+  Contributions welcome; see `## Contributing`.
 
 ## Performance
 
@@ -42,74 +48,145 @@ between a fully unloaded GPU and a load at that `num_ctx`.
 
 ### Measured slopes
 
-| KV type | slope (measured) | slope (theory) | measured/theory | intercept | R² |
-|---|---|---|---|---|---|
-| **f16** (baseline) | **32.11 ± 1.24 KiB/token** | 28.00 | 1.15× | 1119 ± 20 MiB | 0.9956 |
-| **q8_0** | **19.08 ± 1.05 KiB/token** | 14.88 | 1.28× | 1118 ± 17 MiB | 0.9910 |
+| KV type | slope, plain line | slope, line + step | one-time step | slope from theory |
+|---|---|---|---|---|
+| **f16** (baseline) | 32.11 ± 1.24 | **29.99** | **+67.1 MiB** | 28.00 |
+| **q8_0** | 19.08 ± 1.05 | **17.31** | **+56.2 MiB** | 14.88 |
 
-The **slope is the real per-token cost on this machine**. The **intercept is the model's fixed
-footprint** — weights plus CUDA overhead — and it never discounts.
+The first column is what you get by fitting one line across the whole grid. The second is
+what you get after fitting the model the data actually wants. **They disagree by 7% and 10%,
+and the next section shows why the second one wins.**
 
-Two independent runs, an hour apart, different desktop usage, produced intercepts that differ
-by **1 MiB**. That is the evidence that the method is sound.
+The **intercept is the model's fixed footprint** — weights plus CUDA overhead — around
+1110 MiB. It never discounts, no matter how you quantize the cache.
 
-### The toll over theory
+### A straight line hides a step
 
-| | pure KV theory | measured slope | difference |
-|---|---|---|---|
-| f16 | 28.00 | 32.11 | **+4.11** |
-| q8_0 | 14.88 | 19.08 | **+4.20** |
+Five points, five monotone values. Of course a line fits: R² = 0.9956. That number is not
+evidence of linearity, it is a formality — **any** monotone five-point series produces it.
+R² asks "does the line explain the variance", not "is the line the right model".
 
-Two nearly identical gaps across two precisions. This is not a quantization artifact — it is a
-fixed cost:
+So look at the residuals of that fit instead:
 
-- **~1.0 KiB/token** — the attention mask buffer (allocated whether FlashAttention is on or off)
-- **~1.0 KiB/token** — a temporary f16 copy of quantized K/V, required by the FA kernels
-- **~2.0 KiB/token** — allocator fragmentation and alignment
+```
+num_ctx    Δ MiB    residual vs the plain line
+   2048     1166        -17.2
+   4096     1224        -23.5
+   8192     1412        +36.1   <- one clean bump
+  16384     1652        +19.2
+  32768     2132        -14.6
+```
 
-That toll is why quantization never reaches its theoretical ratio. **The saving scales with
-context length; the toll does not.**
+Those residuals do not scatter. They run negative, negative, positive, positive, negative —
+a smooth arc with its peak sitting exactly on 8192. If a straight line were the true model,
+the signs would be in random order.
+
+Add the obvious missing term, a one-time level shift:
+
+```
+ΔVRAM = b + a · N + c · 1[N ≥ 8192]
+```
+
+| | plain line | line + step | F(1,2) | verdict |
+|---|---|---|---|---|
+| f16 | SSE 2731.6 | **SSE 2.0** | **2748** | step wins |
+| q8_0 | SSE 1972.9 | **SSE 57.8** | **66.2** | step wins |
+
+The 5% critical value is 18.5. Both statistics are past it by a wide margin. On f16 the step
+model leaves residuals of **±1 MiB** — the resolution of `nvidia-smi` itself. A model that
+reproduces every measurement to the last reported digit is not an improvement over the line;
+it replaces it.
+
+Fit only the points at or above 8192 and the f16 slope is **30.000 KiB/token**, with three
+points collinear to within a megabyte. The bend was never noise.
+
+### Why the step matters: it was being charged as per-token cost
+
+This is the mistake worth knowing about, because every KV benchmark that fits a single line
+across a context grid makes it.
+
+A 67 MiB step at 8192, if you refuse to model it, gets spread across the whole range by the
+regression. Divided by the largest context it becomes
+
+```
+67.1 MiB / 32768 token × 1024 = 2.10 KiB/token
+```
+
+and that is **exactly** how much the plain slope is inflated: 32.11 − 29.99 = 2.12. The
+arithmetic closes.
+
+Now put that next to the gap between measurement and theory:
+
+| | plain line | line + step |
+|---|---|---|
+| f16 toll over theory | +4.11 | **+2.00** |
+| q8_0 toll over theory | +4.20 | **+2.42** |
+| gap between the two precisions | 0.09 | **0.42** |
+
+Half of the "fixed 4.1 KiB/token toll" was never a per-token cost. It was a one-time
+allocation step, annualised over 32K tokens by the fit. The real per-token overhead is
+**≈2.0 KiB/token** — and it is *not* the same in both precisions. The gap is 0.42, which is
+four and a half times what the plain line reported.
+
+That inverts the original argument. The plain line made the toll look constant, and treated
+that consistency as proof. Once the step is modelled, the consistency is gone and has to be
+replaced by a mechanism.
 
 ### What it means for the VRAM bill
 
 | Question | Answer |
 |---|---|
-| "How much does q8_0 save on the KV cache itself?" | **40.6%** |
+| "How much does q8_0 save on the KV cache itself?" | **42.3%** (the plain line said 40.6%) |
 | "How much does it save on total VRAM at 32K context?" | **19.6%** |
-| "How much at 128K context?" | **31.9%** |
+| "How much at 128K context?" | **32.6%** (extrapolated, no interval) |
 
-Both "half" and "a fifth" are true. They answer different questions. If you are quoting a
+Both "about 40%" and "about a fifth" are true. They answer different questions: the first
+compares KV cache to KV cache, the second compares full VRAM bills. If you are quoting a
 customer, you want the second number.
 
-Model check at 32K — the fit against the raw measurement at `num_ctx=32768`:
+Model check at 32K — each model against the raw measurement at `num_ctx=32768`:
 
-| | from the fit | raw @32768 | Δ |
-|---|---|---|---|
-| f16 | 1119 + 32.11 × 32 = **2146.6 MiB** | 2132 MiB | 14.6 |
-| q8_0 | 1118 + 19.08 × 32 = **1728.4 MiB** | 1714 MiB | 14.4 |
-| saved | **418.2 MiB** | **418.0 MiB** | — |
+| | plain line | Δ | line + step | Δ |
+|---|---|---|---|---|
+| f16 | 1119 + 32.11 × 32 = 2146.6 MiB | 14.6 | 1105.0 + 29.99 × 32 + 67.1 = **2131.9 MiB** | **0.1** |
+| q8_0 | 1118 + 19.08 × 32 = 1728.4 MiB | 14.4 | 1106.1 + 17.31 × 32 + 56.2 = **1716.1 MiB** | 2.1 |
+| saved | 418.2 MiB | — | 415.8 MiB | — |
 
-418 / 2132 = **19.6%**. Both routes give the same saving, which is the point: the line is a
-model of the machine, not a redrawing of the data.
+A model that predicts the raw measurement to **0.1 MiB** — the resolution of `nvidia-smi`
+itself — is not a coincidence you can argue with. The plain line was off by 14.6 MiB here, and
+that error is precisely the step it refused to model.
 
 ### How sure is that number
 
-Five points, three degrees of freedom, Student-t at 95%:
+The intervals below belong to the **plain line** — five points, three degrees of freedom,
+Student-t at 95%:
 
 | KV type | slope ± 1 SE | 95% CI | theory | theory vs CI |
 |---|---|---|---|---|
 | f16 | 32.11 ± 1.24 | [28.18, 36.05] | 28.00 | outside, by 0.18 |
 | q8_0 | 19.08 ± 1.05 | [15.74, 22.43] | 14.88 | outside, by 0.86 |
 
-Both theoretical values sit outside the interval, so the toll is nominally significant.
-**Now look at the margin on f16: 0.18 KiB/token — 0.6%.** One more point could pull the theory
-back inside the interval and turn "there is a toll" into "no detectable difference".
+On f16 the margin is **0.18 KiB/token — 0.6%**. One extra point could pull the theory inside
+the interval and turn "there is a toll" into "no detectable difference". Nobody should build
+an argument on a margin that thin, and this repository does not.
 
-That is why the toll section above does not hang its claim on this CI. It hangs on
-**replication**: two independent runs, two precisions, the same +4.11 / +4.20 gap, intercepts
-1 MiB apart. A systematic offset that survives all of that is not a regression artifact.
+Note also what the CI does **not** say. It answers "if the line were true, how much would the
+slope wobble?" It does not answer "is the line true?" — that is the question the F test
+answered, and the answer was no. Leave-one-out makes the point: dropping any single point
+moves the plain slope between **31.6 and 35.2**, a spread four times wider than the reported
+±1.24. The nominal error bar was measuring the wrong thing.
 
-Want a tighter interval? Add points at 6144 and 24576 — the 4096→8192 step is what widens it.
+The step model is stronger on the main claim and **weaker on precision**:
+
+- **Stronger**: F = 2748 against a critical value of 18.5, and a 32K prediction that lands
+  on the raw measurement with Δ = 0.
+- **Weaker**: the steady-state slope rests on three points that are exactly collinear, so its
+  standard error computes to **zero**. That is not a precise number, it is an unmeasurable
+  one — three points cannot estimate their own scatter.
+
+So the honest statement is: **the slope is 30, not 32; the step is real; and neither has a
+trustworthy error bar yet.** Repeating each grid point is the experiment that would fix it,
+and it has not been run. It is listed as the first item in `## What this repo is not`.
 
 ### Raw measurements
 
@@ -122,23 +199,46 @@ num_ctx   f16 (Δ MiB)   q8_0 (Δ MiB)
  32768        2132          1714
 ```
 
-The 4096→8192 interval is the one place both curves bend upward (30 vs 19 KiB/token for q8_0,
-47 vs 29 for f16). It appeared in two independent runs at the same position, so it is
-systematic, not noise. Most likely cause: a FlashAttention kernel switching on at
-`n_kv ≥ 4096` with `gqa_ratio > 4` — Qwen2.5-1.5B sits exactly at ratio 6. *(Mechanism
-inferred, not confirmed in source.)*
+### What the step might be
 
-### The third rung — predicted, not measured
+Three candidates. **None of them is confirmed, and this repository does not claim to know
+which one it is.**
 
-| KV type | slope | 32K VRAM on Qwen2.5-1.5B |
-|---|---|---|
-| f16 (measured) | 32.11 KiB/token | 2146.6 MiB |
-| q8_0 (measured) | 19.08 | 1728.4 MiB |
-| **q4_0 (predicted)** | **≈ 12.0** | **≈ 1503 MiB** |
+- **Attention kernel switch.** Ollama picks a different attention path above some `n_kv`
+  threshold, and the new path allocates its own workspace. Qwen2.5-1.5B has a GQA ratio of 6,
+  which is where such thresholds tend to sit. Testable in one afternoon: rerun the grid with
+  `OLLAMA_FLASH_ATTENTION=0` and see whether the step moves or vanishes.
+- **Allocator arena growth.** The GGML allocator crosses a size class at 8192 and rounds the
+  KV buffer up to the next arena boundary.
+- **A buffer outside the model.** Ollama's VRAM-based default context on this box is **4096**
+  (`default_num_ctx=4096` in the server log). Something that only materialises once the
+  request passes that default would land in exactly this place.
 
-q4_0 theory is 7.88 KiB/token; add the same ~4.1 toll and you land at 12.0 — 30% below f16 at
-32K. **This row is arithmetic, not a measurement.** It is in the table so you can check the
-model instead of trusting it: run `--kv-bytes 0.5625` and see whether it holds.
+One observation constrains the search: the step appears at the **same position** in both
+precisions but with **different heights** (+67.1 vs +56.2 MiB). A mechanism keyed to
+`num_ctx` would do that. A mechanism keyed to the KV byte count would not.
+
+### The third rung — deliberately not predicted
+
+| KV type | slope | 32K VRAM on Qwen2.5-1.5B | status |
+|---|---|---|---|
+| f16 | 29.99 KiB/token + 67.1 MiB step | 2132.0 MiB | measured |
+| q8_0 | 17.31 + 56.2 MiB step | 1715.6 MiB | measured |
+| q4_0 | 7.88 theory, toll unknown | — | **not predicted** |
+
+An earlier draft of this file did predict q4_0: theory 7.88 plus the "same 4.1 toll" gives
+12.0. That arithmetic is no longer available, and it is worth being explicit about why.
+
+Once the step is modelled, the toll is not one number. It is **2.00** for f16 and **2.42**
+for q8_0 — a 21% spread between two precisions measured on the same machine, the same day,
+with the same script. Extrapolating a constant that is not constant to a third precision is
+not a prediction, it is a guess wearing a decimal point. The step height is worse: 67.1 for
+f16, 56.2 for q8_0, and nothing says where q4_0 lands.
+
+So the honest range is a slope somewhere near **9.9–10.3 KiB/token** and a 32K figure with
+an uncertainty of tens of MiB that this dataset cannot narrow. **If you need the q4_0 number,
+measure it**: `py scripts/ollama_probe.py --kv-bytes 0.5625 --tag q4_0`. That is one command
+and about fifty seconds.
 
 ### Extrapolation to other models
 
@@ -153,6 +253,10 @@ KV cost is `2 × layers × kv_heads × head_dim × bytes`, so it scales predicta
 A 72B model needs 40 GB just to remember the conversation — more than its own weights. That
 single line explains why every model released in late 2026 is a KV cache optimization paper in
 disguise.
+
+Note what this table is: **pure theory, no overhead applied**. On this machine the measured
+overhead at f16 was about 7% on top of theory, but that 7% is a machine fact, not a law, and
+the step height is anybody's guess until measured. Treat these as floors.
 
 Run the script on your own card and you get your own slope, from which you can compute the rest.
 
@@ -257,10 +361,18 @@ CITATION.cff                   GitHub's "Cite this repository" metadata
 ## What this repo is not
 
 - **Not a benchmark.** No tokens/s, no latency, no quality evaluation. Memory only.
+- **No repeated measurements.** Every `num_ctx` was loaded **once**. All three degrees of
+  freedom in the confidence intervals come from model residuals, not from pure error, so a
+  lack-of-fit test is impossible and the error bars are optimistic. This is the single biggest
+  weakness in the dataset and it is the first item on the roadmap.
 - **One machine, one model.** Five points per configuration. The method generalizes; the
-  numbers do not.
+  numbers do not. Two runs here disagree on the idle baseline by ~480 MiB when the desktop is
+  busy — enough to move a two-point slope by 9 KiB/token.
 - **Not proof that q8_0 is lossless.** Practitioner consensus says it is near-lossless; this
   repo did not test it. Do not cite it as evidence that it is.
+- **The step mechanism is unknown.** Three candidates are listed above and none is confirmed.
+  Do not cite this repo for *why* the step exists, only for *that* it exists on this
+  configuration.
 - **The confidence intervals are wide.** df=3. If you need tighter numbers, measure more
   points — the script will tell you the interval honestly.
 
