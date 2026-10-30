@@ -53,6 +53,23 @@ def read_csv(tag):
     return xs, ys
 
 
+def read_csv_full(tag):
+    """Return (num_ctx, delta_mib, loaded_mib, implied_idle_mib) for one run.
+
+    The fourth element is the point of the exercise: the CSV never stored the idle
+    reading, only the difference against it, so the baseline has to be reconstructed
+    as loaded - delta. Doing that is what exposed the q8_0 drift in v0.1.3.
+    """
+    path = os.path.join(ROOT, "data", "ollama_probe_%s.csv" % tag)
+    xs, d, l = [], [], []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            xs.append(int(row["num_ctx"]))
+            d.append(float(row["delta_mib"]))
+            l.append(float(row["loaded_mib"]))
+    return xs, d, l, [a - b for a, b in zip(l, d)]
+
+
 def main():
     probe = load_probe()
 
@@ -147,6 +164,34 @@ def main():
     check("f16 step per 32K token = +2.10", f_step_per_tok, 2.10, 0.02)
     check("inflation = step per token", (fa * 1024) - (fst["slope"] * 1024), f_step_per_tok, 0.05)
 
+    # ------------------------------------------- the baseline nobody recorded (v0.1.3)
+    ffx, ffd, ffl, ffidle = read_csv_full("f16")
+    qqx, qqd, qql, qqidle = read_csv_full("q8_0")
+    check("f16 implied idle spread = 1 MiB", max(ffidle) - min(ffidle), 1, 0)
+    check("q8_0 implied idle spread = 26 MiB", max(qqidle) - min(qqidle), 26, 0)
+    check("q8_0 implied idle is monotone down",
+          1.0 if all(a >= b for a, b in zip(qqidle, qqidle[1:])) else 0.0, 1.0, 0)
+
+    # f16 must be immune to the choice of baseline convention...
+    f_const = probe.stepfit(ffx, [l - ffidle[0] for l in ffl], 8192)
+    q_const = probe.stepfit(qqx, [l - qqidle[0] for l in qql], 8192)
+    check("f16 slope unchanged by baseline choice",
+          f_const["slope"] * 1024, fst["slope"] * 1024, 0.05)
+    check("f16 toll unchanged by baseline choice",
+          f_const["slope"] * 1024 - t_f16, fst["slope"] * 1024 - t_f16, 0.05)
+    # ...and q8_0 must not be.
+    check("q8_0 constant-baseline slope = 16.54", q_const["slope"] * 1024, 16.54, LOOSE)
+    check("q8_0 constant-baseline step = 53.2", q_const["step"], 53.2, 0.1)
+    check("q8_0 constant-baseline SSE = 0.66", q_const["sse"], 0.66, 0.01)
+
+    # the retraction, as an assertion: f16's toll must fall inside q8_0's range,
+    # which is exactly why "the toll differs between precisions" cannot be claimed
+    q_lo = min(q_const["slope"], qst["slope"]) * 1024 - t_q8
+    q_hi = max(q_const["slope"], qst["slope"]) * 1024 - t_q8
+    f_toll_now = fst["slope"] * 1024 - t_f16
+    check("f16 toll lies inside q8_0's range",
+          1.0 if q_lo <= f_toll_now <= q_hi else 0.0, 1.0, 0)
+
     # ---------------------------------------------------------------- corrected toll
     f_toll = fst["slope"] * 1024 - t_f16
     q_toll = qst["slope"] * 1024 - t_q8
@@ -182,19 +227,28 @@ def main():
           1.0 if abs(s32_f - fy[-1]) <= 0.2 else 0.0, 1.0, 0)
     check("step model beats plain line at 32K (f16)", 1.0 if abs(s32_f - fy[-1]) < abs(v32_f - fy[-1]) else 0.0, 1.0, 0)
 
-    # the numbers the README actually quotes
-    check("KV cache saving = 42.3%", (fst["slope"] - qst["slope"]) / fst["slope"] * 100, 42.3, LOOSE)
-    check("total VRAM saving @32K = 19.6%", (fy[-1] - qy[-1]) / fy[-1] * 100, 19.6, LOOSE)
-    check("total VRAM saving @128K = 32.6%", (s128_f - s128_q) / s128_f * 100, 32.6, LOOSE)
+    # the numbers the README quotes: now RANGES, because everything with q8_0 under
+    # it moves with the baseline convention
+    kv_lo = (fst["slope"] - qst["slope"]) / fst["slope"] * 100
+    kv_hi = (fst["slope"] - q_const["slope"]) / fst["slope"] * 100
+    check("KV cache saving low end = 42.3%", kv_lo, 42.3, LOOSE)
+    check("KV cache saving high end = 44.9%", kv_hi, 44.9, 0.05)
+    check("total VRAM saving @32K low = 19.6%", (fy[-1] - qy[-1]) / fy[-1] * 100, 19.6, LOOSE)
+
+    q32c_f = f_const["intercept"] + f_const["slope"] * 32768 + f_const["step"]
+    q32c_q = q_const["intercept"] + q_const["slope"] * 32768 + q_const["step"]
+    check("total VRAM saving @32K high = 20.8%",
+          (1 - q32c_q / q32c_f) * 100, 20.8, LOOSE)
+    check("total VRAM saving @128K low = 32.6%", (s128_f - s128_q) / s128_f * 100, 32.6, LOOSE)
 
     # ---------------------------------------------------------------- prediction
-    # q4_0 is deliberately not predicted as a point value: the toll differs between
-    # the two precisions already measured (2.00 vs 2.42), so a third precision is a
-    # range, not a number. All the README commits to is that range.
-    q4_lo = t_q4 + f_toll
-    q4_hi = t_q4 + q_toll
-    check("q4_0 slope range low = 9.9", q4_lo, 9.9, 0.05)
-    check("q4_0 slope range high = 10.3", q4_hi, 10.3, 0.05)
+    # q4_0 is deliberately not predicted as a point value. Note the width of this
+    # range is now driven by the baseline uncertainty, not by a claimed difference
+    # between precisions - that claim was withdrawn in v0.1.3.
+    q4_lo = t_q4 + min(f_toll, q_lo)
+    q4_hi = t_q4 + max(f_toll, q_hi)
+    check("q4_0 slope range low = 9.5", q4_lo, 9.54, 0.05)
+    check("q4_0 slope range high = 10.3", q4_hi, 10.31, 0.05)
 
     # ---------------------------------------------------------------- extrapolation
     def per_token(layers, kv_heads, head_dim):

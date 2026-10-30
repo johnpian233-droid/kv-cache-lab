@@ -3,21 +3,26 @@ message: "If you use these measurements or the numbers derived from them, please
 title: "kv-cache-lab: VRAM accounting for KV cache quantization on consumer GPUs"
 abstract: >-
   A single-script measurement of what KV cache quantization saves in VRAM on a consumer
-  GPU. A straight-line fit across five context lengths gives 32.11 +/- 1.24 KiB/token for
-  f16 and 19.08 +/- 1.05 for q8_0 on an RTX 4060 Laptop with Qwen2.5-1.5B - but the
-  residuals reject that model (F = 2748 against a 5% critical value of 18.513). Adding a
-  one-time 67.1 MiB allocation step at context 8192 fits the same data to within 1 MiB and
-  moves the slopes to 29.99 and 17.31 KiB/token. The per-token overhead over theory is
-  therefore about 2.0 KiB rather than the 4.1 KiB a naive fit reports; half of the
-  difference is the allocation step annualised over 32K tokens. The repository ships the
-  measuring script, the raw CSVs, and 72 self-checks that recompute every quoted number
-  without a GPU. A quadratic fit, which carries the same three parameters as the step model, is rejected by a factor of 486 on f16 and 6.6 on q8_0, so the bend is a jump rather than curvature.
+  GPU - one RTX 4060 Laptop, one model, one load per context length, five context lengths.
+  A straight-line fit gives 32.11 +/- 1.24 KiB/token for f16, but the residuals form a
+  smooth arc peaking at 8192 and reject that model (F = 2748 against a 5% critical value of
+  18.513). Adding a one-time 67.1 MiB allocation step at 8192 fits the same data to an SSE
+  of 2.0 and moves the slope to 29.99 KiB/token. A quadratic carries the same three
+  parameters and fits 486x worse, so the bend is a jump rather than curvature. The
+  per-token overhead over theory is therefore 1.99 KiB rather than the 4.1 KiB a naive fit
+  reports, and about half of the difference was the step being amortised over 32K tokens.
+  The q8_0 run is reported as a range rather than a point (slope 16.5-17.3 KiB/token)
+  because its idle VRAM baseline drifted 26 MiB during measurement; the f16 run held to
+  1 MiB and is unaffected. No claim is made that the overhead differs between precisions.
+  Scope: memory only, no throughput, no output quality, no repeated measurements. The
+  repository ships the measuring script, the raw CSVs, and 83 self-checks that recompute
+  every quoted number without a GPU.
 authors:
   - family-names: "Xia"
     given-names: "Kong"
     alias: "johnpian233-droid"
     website: "https://github.com/johnpian233-droid"
-version: "0.1.2"
+version: "0.1.3"
 date-released: "2026-10-30"
 license: MIT
 repository-code: "https://github.com/johnpian233-droid/kv-cache-lab"

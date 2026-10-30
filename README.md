@@ -12,16 +12,20 @@
 `kv-cache-lab` is a one-script lab that answers a single question with arithmetic instead of
 marketing: **how much VRAM does KV cache quantization actually save on a consumer GPU?**
 
-Vendors advertise "50% off". On an 8 GB laptop GPU the measured answer is **19.6% off the
-total VRAM bill at 32K context**, of which **42.3% comes off the KV cache itself**. The
-difference is overhead that quantization cannot discount: about **2.0 KiB/token** of running
-cost, plus a **one-time ~67 MiB allocation step** at 8192.
+Vendors advertise "50% off". On an 8 GB laptop GPU the measured answer is **19.5–20.8% off the
+total VRAM bill at 32K context**. Separately, and on a different denominator, **42–45% comes off
+the KV cache itself**. The difference is overhead that quantization cannot discount: about
+**2.0 KiB/token** of running cost on f16, plus a **one-time ~67 MiB allocation step** at 8192.
+
+Those two percentages are not two parts of one number. Read as "19.6% of which 42.3%" they
+multiply out to roughly 8%, which is not what either figure means.
 
 That step is the actual finding, and it is the part most KV benchmarks get wrong. Fitting one
 line across the grid yields 32.11 KiB/token. The data rejects that model — **F = 2748 against
 a critical value of 18.513** — in favour of **29.99 KiB/token plus a 67.1 MiB step**, and the
-gap between the two is, to within 0.02 KiB/token, the step divided by the largest context.
-Half of the commonly quoted "fixed 4.1 KiB/token toll" is an artifact of that mistake.
+gap between the two is, to within 0.03 KiB/token, the step divided by the largest context.
+Half of the "fixed 4.1 KiB/token **toll**" that circulates in KV discussions — *toll* throughout
+this file meaning measured slope minus textbook slope — is an artifact of that mistake.
 
 This repo contains the script that produces the numbers, the raw CSVs it produced, and the
 derivation of both models, so that every claim can be recomputed rather than trusted.
@@ -30,17 +34,26 @@ No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
 
 ## News
 
+- **2026.10.30 v0.1.3 — one claim withdrawn, one column found.** `loaded_mib − delta_mib`
+  recovers the idle reading behind every row, and it shows the f16 run held a baseline to **1 MiB**
+  while the q8_0 run drifted **26 MiB**. f16 is unaffected (both baseline conventions give 29.99,
+  +67 MiB, toll 1.993). q8_0 is not: its slope is 16.5–17.3 and its toll 1.66–2.43, and f16's 1.99
+  sits inside that range — so **v0.1.2's claim that the toll differs between precisions is
+  withdrawn.** Percentages that rest on q8_0 are now ranges. Also in this release: the F test is
+  labelled conditional rather than calibrated, "every KV benchmark makes this mistake" is softened
+  to what was actually checked, and the CSV now records `idle_mib` so the next run cannot hide this.
+  Self-checks 72 → 83. No measurement changed.
 - **2026.10.30 v0.1.2 — the step result survived a second audit.** Added a quadratic
   comparison (same parameter count as the step model; the step wins by 486× on f16 and 6.6× on
   q8_0), downgraded the 32K agreement from "prediction" to "in-sample fit", corrected the
   leave-one-out comparison (it was measured against 1 SE instead of the 2 SE band), defined
   *toll* on first use, replaced "annualised" with "amortised", and added a Related work section
-  and a measurement-protocol section. Test count 67 → 72. No measurement changed: the CSVs are
+  and a measurement-protocol section. Self-checks 59 → 72. No measurement changed: the CSVs are
   byte-identical to v0.1.0.
 - **2026.10.30 v0.1.0 — first public release.** Two configurations (f16, q8_0) across five
   context lengths each. A straight-line fit gives 32.11 / 19.08 KiB/token, then fails a
   residual check: modelling a one-time step at 8192 fits the same data to ±1 MiB and moves the
-  slopes to **29.99 / 17.31**. 72 self-checks recompute every number quoted here without a GPU. 15-page
+  slopes to **29.99 / 17.31**. 83 self-checks recompute every number quoted here without a GPU. 15-page
   Chinese write-up with charts and derivations (`docs/kv-cache-report-zh.pdf`).
 - **Roadmap** — q4_0 actually measured (currently refused on principle, see
   `### The third rung`), repeated points at every grid position for a real error bar,
@@ -116,6 +129,51 @@ points collinear to within a megabyte. That subset is *inside* the fit above, so
 independent evidence. It is still worth printing, because it is the one thing a curve cannot do:
 three points on a straight line are what a step leaves behind, and what a parabola cannot.
 
+### The q8_0 run had a drifting baseline, and that changes the q8_0 answer
+
+The CSV stores `loaded_mib` and `delta_mib`. Subtract them and you recover the idle reading that
+was used for each point — a column nobody ever printed:
+
+```
+num_ctx    f16 implied idle    q8_0 implied idle
+   2048                1230                   811
+   4096                1230                   805
+   8192                1229                   805
+  16384                1229                   789
+  32768                1229                   785
+```
+
+The f16 run sits on a baseline that moves **1 MiB** across the whole grid. The q8_0 run moves
+**26 MiB**, monotonically. Whether the desktop was genuinely releasing VRAM or the reading was
+drifting does not matter for what follows: the subtraction puts all of it into `delta_mib`, and
+26 MiB is five times larger than the q8_0 residual (5.8 MiB) it was supposed to be testing against.
+
+So fit q8_0 both ways — trust each idle reading, or assume one baseline for the run:
+
+| q8_0, baseline convention | slope | step | SSE | toll over theory |
+|---|---|---|---|---|
+| per-point idle, as recorded | 17.31 | +56.2 MiB | 57.8 | +2.43 |
+| constant idle = 811 | **16.54** | **+53.2 MiB** | **0.66** | **+1.66** |
+
+Both are defensible, and nothing in the data picks between them. Three consequences, in order of
+how much they hurt:
+
+**The f16 result is immune.** Its baseline moves 1 MiB, and both conventions give a slope of
+29.99, a step of 66–67 MiB, an SSE of 2.0 and a toll of 1.993. Everything this README leans on is
+the f16 column, and the f16 column does not care.
+
+**The q8_0 numbers have to be quoted as ranges.** Slope **16.5–17.3**, step **53–56 MiB**, 32K
+figure **1688–1716 MiB**, toll **1.66–2.43**.
+
+**A claim in v0.1.2 is withdrawn.** That version said the toll was 1.99 on f16 and 2.43 on q8_0,
+called it "a 22% spread", and treated the difference as a finding. f16's 1.99 sits *inside*
+q8_0's range. The gap is smaller than the uncertainty from one unrecorded column, so **this
+repository has no evidence that the toll differs between precisions.**
+
+Note also which way the error ran. With a constant baseline, q8_0's step model fits to an SSE of
+**0.66** — better than f16's 2.0 — and beats a quadratic by 923×. The earlier reading, that q8_0
+"does not fit tightly", was the baseline moving, not the model failing.
+
 ### Could it just be a smooth curve?
 
 A reader is entitled to be suspicious here. A step term is a very flexible thing to bolt onto a
@@ -139,16 +197,17 @@ same negative-negative-positive-positive-negative wobble, only smaller. A parabo
 spike on one interior point without paying for it at both ends, and 8192 is where the spike is.
 The data contains a jump, not a bend.
 
-Two honesty notes. First, the margin on q8_0 is **6.6×** rather than 486× — smaller, same
-direction, and this repository would rather print the smaller number. Second, **q8_0 does not
-fit tightly at all**: its step-model residuals run to 5.8 MiB against f16's 1.0 MiB, roughly six
-times worse, and there is no established explanation in this work. The F test still rejects the
-line for q8_0, but anyone citing that configuration should know the fit is looser than the f16 one.
+Two notes on the q8_0 column. First, its margin is **6.6×** rather than 486×, and if you use the
+constant-baseline fitting from the previous section the same margin becomes **923×** — the number
+moves by two orders of magnitude depending on a choice nothing in the data settles. Second, that
+is exactly why the q8_0 comparison is worth less than the f16 one: the f16 column is stable under
+that choice and the q8_0 column is not.
 
 ### Why the step matters: it was being charged as per-token cost
 
-This is the mistake worth knowing about, because every KV benchmark that fits a single line
-across a context grid makes it.
+This is the mistake worth knowing about, because any KV benchmark that fits a single line across
+a context grid will make it — including, in an earlier draft, this one. Whether specific published
+numbers have made it is not something this repository checked, and it does not claim so.
 
 A 67 MiB step at 8192, if you refuse to model it, gets spread across the whole range by the
 regression. Divided by the largest context it becomes
@@ -165,36 +224,55 @@ Now put that next to the gap between measurement and theory. Throughout this fil
 
 | | plain line | line + step |
 |---|---|---|
-| f16 toll over theory | +4.11 | **+1.99** |
-| q8_0 toll over theory | +4.20 | **+2.43** |
-| gap between the two precisions | 0.09 | **0.44** |
+| f16 toll over theory | +4.11 | **+1.99** (identical under both baseline conventions) |
+| q8_0 toll over theory | +4.20 | **+1.66 … +2.43** |
+| gap between the two precisions | 0.09 | **not established** |
 
-Half of the "fixed 4.1 KiB/token toll" was never a per-token cost. It was a one-time
-allocation step, amortised over 32K tokens by the fit. The real per-token overhead is
-**≈2.0 KiB/token** — and it is *not* the same in both precisions. The gap is 0.44, which is
-nearly five times what the plain line reported.
+Half of the "fixed 4.1 KiB/token toll" was never a per-token cost. It was a one-time allocation
+step, amortised over 32K tokens by the fit. The real per-token overhead on f16 is **1.99
+KiB/token**.
 
-That inverts the original argument. The plain line made the toll look constant, and treated
-that consistency as proof. Once the step is modelled, the consistency is gone and has to be
-replaced by a mechanism.
+The obvious next sentence — "and it is not the same in both precisions" — is the one this
+repository cannot support. q8_0's range brackets f16's value, so the data is equally consistent
+with one shared toll and with two different ones. v0.1.2 of this file claimed a difference of
+0.44 and called it "nearly five times" the plain line's 0.09. Both numbers are smaller than the
+uncertainty from a single unrecorded column. The claim is gone.
+
+What survives is narrower and still worth having: the toll is one number around 2 KiB/token, not
+a 4.1 KiB/token constant, and the difference between those two answers is a step that was being
+charged per token.
+
+That does invert part of the original argument. The plain line made the toll look constant, and
+treated that consistency as proof of a mechanism. Once the step is modelled the consistency is
+gone — but so is the evidence for the mechanism that was supposed to replace it. This file
+therefore reports the decomposition and not the mechanism.
 
 ### What it means for the VRAM bill
 
 | Question | Answer |
 |---|---|
-| "How much does q8_0 save on the KV cache itself?" | **42.3%** (the plain line said 40.6%) |
-| "How much does it save on total VRAM at 32K context?" | **19.6%** |
-| "How much at 128K context?" | **32.6%** (extrapolated, no interval) |
+| "How much does q8_0 save on the KV cache itself?" | **42–45%** (the plain line said 40.6%) |
+| "How much does it save on total VRAM at 32K context?" | **19.5–20.8%** |
+| "How much at 128K context?" | **32.6–34.6%** (extrapolated, no interval) |
 
 Both "about 40%" and "about a fifth" are true. They answer different questions: the first
 compares KV cache to KV cache, the second compares full VRAM bills. If you are quoting a
 customer, you want the second number.
 
-Two footnotes so the ratios can be reproduced. **42.3%** is the ratio of the two *measured*
-slopes, and each slope already carries its own ~2 KiB/token overhead, so it is "KV cache vs KV
-cache as billed", not "pure KV bytes" — against pure theory the ratio is 46.9%. And the
-percentages do not share a denominator: **19.6%** divides by the raw 32K measurement, while
-**32.6%** divides by the fitted 128K value, which is an extrapolation with no interval.
+These are ranges rather than points for one reason, and it is not statistical: q8_0's baseline
+wanders (see the section above), so every ratio that has q8_0 underneath it inherits that
+wander. The low end of each range is the as-recorded fitting; the high end is the
+constant-baseline fitting. **Quoting one decimal of any of them is false precision.**
+
+Three footnotes so the ratios can be reproduced. The percentages are ratios of the two *measured*
+slopes, and each slope already carries its own ~2 KiB/token overhead, so this is "KV cache vs KV
+cache as billed", not "pure KV bytes" — against pure theory the ratio is 46.9%. The percentages do
+not share a denominator: the 32K figure divides by the fitted value at 32K, while the 128K figure
+divides by an extrapolation that has no interval. And the plain line's 40.6% is computed the same
+way, so the comparison in the first row is at least like-for-like.
+
+One thing the ranges do **not** cover: the step height. q8_0's is 53–56 MiB and f16's is 66–67,
+and nothing here explains why they differ.
 
 Model check at 32K — each model against the raw measurement at `num_ctx=32768`:
 
@@ -235,11 +313,19 @@ wobbles.
 
 The step model is stronger on the main claim and **weaker on precision**:
 
-- **Stronger**: F = 2748 against a critical value of 18.513, and a 32K prediction that lands
-  on the raw measurement with Δ = 0.1 MiB.
-- **Weaker**: the steady-state slope rests on three points that are exactly collinear, so its
-  standard error computes to **zero**. That is not a precise number, it is an unmeasurable
-  one — three points cannot estimate their own scatter.
+- **Stronger**: F = 2748 against a critical value of 18.513, and an in-sample residual at 32K of
+  0.1 MiB.
+- **Weaker**: the steady-state slope rests on three points that are collinear to within about a
+  megabyte, so its standard error computes to **zero**. That is not a precise number, it is an
+  unmeasurable one — three points cannot estimate their own scatter, and "collinear to 1 MiB" and
+  "exactly collinear" are the same fact reported at two levels of charity.
+
+A third asymmetry, which is the one a referee would press hardest: the F test's denominator is
+the step model's own residual, and on f16 that residual (2.0, i.e. about 1 MiB per point) is the
+`nvidia-smi` tick. So F = 2748 is **conditional** on the step model's form being right and on the
+measurement being essentially noiseless. With this dataset there is no pure replicate, so the
+denominator cannot be separated from lack of fit. Treat F as an upper bound on how strongly the
+data prefer a step, not as a calibrated p-value.
 
 So the honest statement is: **the slope is 30, not 32; the step is real; and neither has a
 trustworthy error bar yet.** Repeating each grid point is the experiment that would fix it,
@@ -248,13 +334,16 @@ and it has not been run. It is listed as the first item in `## What this repo is
 ### Raw measurements
 
 ```
-num_ctx   f16 (Δ MiB)   q8_0 (Δ MiB)
-  2048        1166          1139
-  4096        1224          1177
-  8192        1412          1297
- 16384        1652          1445
- 32768        2132          1714
+num_ctx   f16 (Δ MiB)   q8_0 (Δ MiB)   f16 idle   q8_0 idle
+  2048        1166          1139         1230         811
+  4096        1224          1177         1230         805
+  8192        1412          1297         1229         805
+ 16384        1652          1445         1229         789
+ 32768        2132          1714         1229         785
 ```
+
+The last two columns are not in the CSV — they are `loaded_mib − delta_mib`, and they were the
+most informative thing in this dataset once someone bothered to compute them.
 
 ### What the step might be
 
@@ -286,14 +375,14 @@ precisions but with **different heights** (+67.1 vs +56.2 MiB). A mechanism keye
 An earlier draft of this file did predict q4_0: theory 7.88 plus the "same 4.1 toll" gives
 12.0. That arithmetic is no longer available, and it is worth being explicit about why.
 
-Once the step is modelled, the toll is not one number. It is **1.99** for f16 and **2.43**
-for q8_0 — a 22% spread between two precisions measured on the same machine, the same day,
-with the same script. Extrapolating a constant that is not constant to a third precision is
-not a prediction, it is a guess wearing a decimal point. The step height is worse: 67.1 for
-f16, 56.2 for q8_0, and nothing says where q4_0 lands.
+Two precisions, on the same machine, on the same day, with the same script, and the toll is
+**1.99** on one and **1.66–2.43** on the other. That is not a constant, it is a bracket. Adding
+it to a theory value for a third precision would produce a number with two significant figures
+and no content — and the step height is worse still: 66–67 MiB on f16, 53–56 on q8_0, and nothing
+says where q4_0 lands.
 
-So the honest range is a slope somewhere near **9.9–10.3 KiB/token** and a 32K figure with
-an uncertainty of tens of MiB that this dataset cannot narrow. **If you need the q4_0 number,
+So the honest range is a slope somewhere near **9.5–10.3 KiB/token** and a 32K figure with an
+uncertainty of tens of MiB that this dataset cannot narrow. **If you need the q4_0 number,
 measure it**: `py scripts/ollama_probe.py --kv-bytes 0.5625 --tag q4_0`. That is one command
 and about fifty seconds.
 
@@ -307,7 +396,8 @@ KV cost is `2 × layers × kv_heads × head_dim × bytes`, so it scales predicta
 | Llama-3-8B | 128 KiB | 4 GiB | **16 GiB** |
 | Qwen2.5-72B | 320 KiB | 10 GiB | **40 GiB** |
 
-A 72B model needs 40 GB just to remember the conversation — more than its own weights. That
+A 72B model needs 40 GB just to remember the conversation — comparable to its own 4-bit weights,
+and larger than them at 8-bit. That
 single line explains why every model released in late 2026 is a KV cache optimization paper in
 disguise.
 
@@ -459,7 +549,7 @@ Everything needed to reproduce the numbers is in this repository, and none of it
 | | |
 |---|---|
 | Raw measurements | `data/ollama_probe_f16.csv`, `data/ollama_probe_q8_0.csv` — one row per load, with provenance columns |
-| Re-derivation | `python tests/test_fit.py` — 72 checks, standard library only |
+| Re-derivation | `python tests/test_fit.py` — 83 checks, standard library only |
 | Measurement | `python scripts/ollama_probe.py --kv-bytes <b> --tag <name>` — needs Ollama and `nvidia-smi` |
 | Write-up | `docs/kv-cache-report-zh.pdf` — Chinese, 15 pages. **Snapshot of v0.1.1**: it predates the quadratic comparison and the audit corrections in v0.1.2. Where it disagrees with this README, the README and the CSVs are current. |
 
@@ -484,6 +574,11 @@ right and the README is a bug.
   configuration.
 - **The confidence intervals are wide.** df=3. If you need tighter numbers, measure more
   points — the script will tell you the interval honestly.
+- **The idle baseline was not recorded.** Until v0.1.3 the CSV stored `delta_mib` and
+  `loaded_mib` but not the idle reading they were differenced against, which is how a 26 MiB
+  drift in the q8_0 run went unnoticed for two releases. It is recorded now. The historical
+  CSVs are left byte-identical on purpose: rewriting a primary record to add a column you
+  reconstructed afterwards is worse than admitting the column is missing.
 
 ## Contributing
 

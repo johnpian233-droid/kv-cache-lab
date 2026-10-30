@@ -446,7 +446,12 @@ def main():
         theory = theory_kv_kib(L, args.layers, args.kv_heads, args.head_dim, kv_bytes) / 1024
 
         print(f"{L:>8} | {loaded:>10} | {delta:>9} | {theory:>10.1f} | {dt:>6.1f}")
+        # idle_mib is the reading this row was differenced against. It used to be
+        # thrown away, and that is how a 26 MiB baseline drift in one run went
+        # unnoticed for two releases: `loaded - delta` was recoverable, but only if
+        # somebody thought to compute it.
         rows.append(dict(num_ctx=L, loaded_mib=loaded, delta_mib=delta,
+                         idle_mib=cur_idle,
                          theory_kv_mib=round(theory, 1), load_sec=round(dt, 1)))
 
     # ---- fit BEFORE writing, so the CSV always lands
@@ -465,7 +470,7 @@ def main():
         "kv_bytes_per_elem": kv_bytes,
     }
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fields = ["num_ctx", "loaded_mib", "delta_mib", "theory_kv_mib", "load_sec",
+        fields = ["num_ctx", "loaded_mib", "delta_mib", "idle_mib", "theory_kv_mib", "load_sec",
                   "model", "ollama_version", "kv_cache_type", "kv_bytes_per_elem"]
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -495,12 +500,28 @@ def main():
               f"{'outside' if abs(gap) > half_a * 1024 else 'INSIDE'} the 95% CI")
     else:
         print("       (fewer than 3 samples - no interval; model still needs 3+ points)")
+    # A high R^2 is a formality, not evidence: five monotone points produce it whether
+    # or not a line is the right model. Say so, instead of certifying the slope.
     if r2 > 0.999:
-        print("       strictly linear — slope is the real per-token cost on this box.")
+        print("       R^2 is very high - but that is a formality, not evidence of linearity.")
     elif r2 > 0.99:
-        print("       near-linear (allocator rounding causes small deviation).")
+        print("       R^2 near 1; again a formality. Read the residuals below, not this.")
     else:
         print("       WARNING: poor linearity. Check for leftover VRAM from other apps.")
+    print("=" * 72)
+
+    # ---- was the baseline stable? This check did not exist before v0.1.3, and its
+    # absence is what let a 26 MiB drift hide inside delta_mib.
+    idle_series = [r["idle_mib"] for r in good if r.get("idle_mib") is not None]
+    drift = (max(idle_series) - min(idle_series)) if len(idle_series) > 1 else 0
+    if idle_series:
+        print(f"[idle]    baseline across the run: {idle_series[0]} -> {idle_series[-1]} MiB"
+              f"   (spread {drift} MiB)")
+        if drift > 5:
+            print("          WARNING: the baseline moved while measuring. Every delta inherited")
+            print("          that movement, and a monotone drift looks like curvature - it can")
+            print("          be absorbed by a fit as a fake step or a fake bend. The constant-")
+            print("          baseline refit below is the other end of the honest range.")
     print("=" * 72)
 
     # A high R^2 does not mean the line is the right model: five monotone points
@@ -535,6 +556,22 @@ def main():
             print(f"       -> F {st['f']:.1f} <= {fcrit:.3f} at 5%: the step does not earn")
             print("          its parameter. Straight line stands.")
         print("-" * 72)
+
+        # If the baseline drifted, the slope depends on a convention the data does not
+        # settle. Print both ends rather than one number.
+        if drift > 5 and idle_series:
+            const_ys = [r["loaded_mib"] - idle_series[0] for r in good]
+            cst = stepfit(xs, const_ys, st["step_at"])
+            if cst:
+                lo = min(st["slope"], cst["slope"]) * 1024
+                hi = max(st["slope"], cst["slope"]) * 1024
+                print()
+                print(f"[range]   constant baseline {idle_series[0]} MiB gives slope "
+                      f"{cst['slope'] * 1024:.2f}, step {cst['step']:+.1f} MiB, SSE {cst['sse']:.1f}")
+                print(f"          -> quote slope as {lo:.1f}-{hi:.1f} KiB/token. Two defensible")
+                print("             conventions disagree by more than the effect being measured,")
+                print("             so neither single value is a result.")
+                print("-" * 72)
 
         # A step and a smooth curve both bend five points. Same parameter count,
         # so SSE compares directly with no penalty term.

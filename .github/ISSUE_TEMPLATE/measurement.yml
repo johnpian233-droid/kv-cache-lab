@@ -73,6 +73,19 @@ body:
     validations:
       required: false
 
+  - type: input
+    id: idle
+    attributes:
+      label: Idle baseline drift
+      description: |
+        Copied from the `[idle]` line the script prints, e.g. "1230 -> 1229, spread 1 MiB".
+        This field exists because v0.1.3 found a 26 MiB drift inside one of its own runs,
+        which moved that run's slope by 4.5% — more than the effect it was measuring. A
+        report without this line cannot be compared with one that has it.
+      placeholder: "823 -> 797, spread 26 MiB"
+    validations:
+      required: true
+
   - type: textarea
     id: csv
     attributes:
