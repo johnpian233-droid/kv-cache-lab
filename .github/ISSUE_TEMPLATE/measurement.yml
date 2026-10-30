@@ -1,0 +1,78 @@
+name: Report a measurement
+description: Share a slope from your own GPU so it can be added to the community table.
+title: "[measurement] <GPU> — <slope> KiB/token, <KV type>"
+labels: ["measurement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for measuring. Numbers are *supposed* to disagree — that is the point.
+
+        Before posting, please run `python tests/test_fit.py` once. It only re-derives the
+        arithmetic from the committed CSVs, so if it fails on your machine the problem is
+        the repo, not your GPU.
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: Output of `nvidia-smi --query-gpu=name,memory.total --format=csv`
+      placeholder: "NVIDIA GeForce RTX 4060 Laptop GPU, 8188 MiB"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model and quantization
+      description: Ollama tag including the quant suffix, if any.
+      placeholder: "qwen2.5:1.5b (Q4_K_M)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kvtype
+    attributes:
+      label: KV cache type
+      options:
+        - f16
+        - q8_0
+        - q4_0
+        - other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: ollama
+    attributes:
+      label: Ollama version
+      description: Output of `ollama --version`
+      placeholder: "0.40.6"
+    validations:
+      required: true
+
+  - type: input
+    id: slope
+    attributes:
+      label: Measured slope
+      description: Copied from the `[fit]` line the script prints.
+      placeholder: "32.11 +/- 1.24 KiB/token"
+    validations:
+      required: true
+
+  - type: textarea
+    id: csv
+    attributes:
+      label: CSV
+      description: Paste the contents of `ollama_probe_<tag>.csv`.
+      render: csv
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything unusual
+      description: Background apps, a step in the curve, a driver quirk — all useful.
+    validations:
+      required: false

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime output
+*.log
+ollama_probe_run.csv
+serve.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

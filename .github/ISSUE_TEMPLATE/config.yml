@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Read the method before measuring
+    url: https://github.com/johnpian233-droid/kv-cache-lab#how-it-measures
+    about: Deltas over absolutes. Absolute VRAM numbers from two different sessions are not comparable.
+  - name: Check the numbers you are about to quote
+    url: https://github.com/johnpian233-droid/kv-cache-lab#how-sure-is-that-number
+    about: The confidence intervals are wide (df = 3). Please quote them alongside the slope.

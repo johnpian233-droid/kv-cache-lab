@@ -1,0 +1,13 @@
+# No runtime dependencies.
+#
+# scripts/ollama_probe.py uses the Python standard library only (urllib, subprocess,
+# json, csv, math, threading). Python 3.8+ is required; nothing needs to be installed.
+#
+# External non-Python requirements, for the record:
+#   - Ollama reachable at http://127.0.0.1:11434
+#   - nvidia-smi on PATH
+#
+# tests/test_fit.py is also dependency-free and runs with plain `python tests/test_fit.py`.
+#
+# If you prefer pytest, `pytest tests/` works too: every check is a plain assert helper
+# that reports one line per fact, so both runners accept it.

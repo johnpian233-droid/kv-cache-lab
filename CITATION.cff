@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use these measurements or the numbers derived from them, please cite this repository."
+title: "kv-cache-lab: VRAM accounting for KV cache quantization on consumer GPUs"
+abstract: >-
+  A single-script measurement of what KV cache quantization saves in VRAM on a consumer
+  GPU. Measured slopes are 32.11 +/- 1.24 KiB/token for f16 and 19.08 +/- 1.05 KiB/token
+  for q8_0 on an RTX 4060 Laptop with Qwen2.5-1.5B, implying a fixed per-token overhead of
+  roughly 4.1 KiB that quantization cannot discount.
+authors:
+  - family-names: "Xia"
+    given-names: "Kong"
+    alias: "johnpian233-droid"
+    website: "https://github.com/johnpian233-droid"
+version: "0.1.0"
+date-released: "2026-10-30"
+license: MIT
+repository-code: "https://github.com/johnpian233-droid/kv-cache-lab"
+keywords:
+  - kv-cache
+  - quantization
+  - vram
+  - ollama
+  - llm-inference
+  - consumer-gpu
+  - memory-accounting
