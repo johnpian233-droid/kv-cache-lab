@@ -34,6 +34,29 @@ No frameworks, no dependencies. One script, three CSVs, and the arithmetic.
 
 ## News
 
+- **2026.10.30 v0.2.2 — the reporting path had no test, and it was printing `+0.00`.** Three
+  defects changed a number on screen: the step analysis reported the straight-line slope as
+  inflated by `+0.00 KiB/token` because it subtracted one estimate of the within-region slope
+  from another (the answer is **1.89**); `--bracket` silently dropped the largest context from
+  its fit whenever `--aba` was absent, which is the point with the longest lever arm; and
+  `stepfit` accepted four points with a lone point on one side, where `df=1` makes F diverge
+  whatever the data says. Six more could produce a number where there was no measurement: an
+  idle sample that returned nothing carried the *previous* row's baseline forward, giving
+  `delta = 0 − idle` and fitting it as data; the peak list was a closure cell, so a sampler
+  thread left over from one row could write into the next row's peak; `--kv-bytes` matching no
+  known type was recorded as `kv_type_verified=True`; a repeated `num_ctx` printed `nan` for
+  every coefficient and still exited 0; `--model qwen2.5` never matched the `/api/ps` entry
+  `qwen2.5:latest`, so an unload was "confirmed" for a model still holding VRAM; and `--gpu 3`
+  on a one-GPU box measured GPU 0 without saying so. `tests/test_replay.py` runs the real
+  reporting path against recorded VRAM levels, so a printed sentence can fail a test.
+  Self-checks 89 → **93**, plus 23 replay checks. No measurement changed.
+- **2026.10.30 v0.2.1 — two transcription errors, one of them reversing a conclusion.** The
+  q8_0 step had been quoted as +67.1 MiB, which is the *f16* number; the replication section
+  paired a slope from one Δ column with a step from the other, so a reader could not reproduce
+  it from the table on the same page. The replication CSV also carried the machine owner's
+  absolute local path in every row, in a public repository. Documentation only; self-checks
+  89 → 89. *This entry was missing until v0.2.2 — the tag and the release existed, but neither
+  README's changelog mentioned them.*
 - **2026.10.30 v0.2.0 — the q8_0 grid was re-measured, and it reproduced to 4 MiB.** A second
   pass over the same five contexts, with median-sampled idles, peak-sampled loads, unload
   confirmed through `/api/ps` instead of a VRAM threshold, and the KV type read out of the
@@ -511,6 +534,7 @@ cd kv-cache-lab
 
 # optional: verify the arithmetic against the committed CSVs (no GPU needed)
 python tests/test_fit.py
+python tests/test_replay.py
 
 # pull a model if you do not have one
 ollama pull qwen2.5:1.5b
@@ -604,8 +628,10 @@ is exactly how the weights get separated from the per-token cost.
 ```
 scripts/ollama_probe.py        the only script — standard library only
 tests/test_fit.py              re-derives every number in this README from data/, no GPU needed
+tests/test_replay.py           runs the reporting path on recorded levels, so printed claims are tested too
 data/*.csv                     raw measurements, with provenance columns
 docs/kv-cache-report-zh.pdf    15-page Chinese write-up (v0.1.1 snapshot)
+docs/warehouse-story-zh.pdf    10-page plain-language version, warehouse-inventory analogy
 docs/PUBLISHING-zh.md          how this repo was published, step by step (Chinese)
 .github/ISSUE_TEMPLATE/        "report your own number" issue form
 CITATION.cff                   GitHub's "Cite this repository" metadata
@@ -620,8 +646,10 @@ Everything needed to reproduce the numbers is in this repository, and none of it
 |---|---|
 | Raw measurements | `data/ollama_probe_f16.csv`, `data/ollama_probe_q8_0.csv` — one row per load, with provenance columns |
 | Replication | `data/ollama_probe_q8_0_replication.csv` — the q8_0 grid re-measured under the v0.2 protocol, with `idle_mib`, `size_vram_mib` and a verified `kv_type_verified` flag |
-| Re-derivation | `python tests/test_fit.py` — 89 checks, standard library only |
+| Re-derivation | `python tests/test_fit.py` — 93 checks, standard library only |
+| Reporting path | `python tests/test_replay.py` — 23 checks; runs `main()` against recorded VRAM levels, no GPU |
 | Measurement | `python scripts/ollama_probe.py --kv-bytes <b> --tag <name> --samples 9 --aba` — needs Ollama and `nvidia-smi` |
+| Plain language | `docs/warehouse-story-zh.pdf` — 10 pages, Chinese. Explains the three ledgers through a warehouse inventory analogy, starting from a stock row whose three fields imply negative stock. No statistics required. |
 | Write-up | `docs/kv-cache-report-zh.pdf` — Chinese, 15 pages. **Snapshot of v0.1.1**: it predates the quadratic comparison and the audit corrections in v0.1.2. Where it disagrees with this README, the README and the CSVs are current. |
 
 The CSVs are the primary record. If a number in this README disagrees with a CSV, the CSV is

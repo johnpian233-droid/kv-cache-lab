@@ -15,7 +15,7 @@
 ```bash
 cd /d <你的仓库目录>
 
-# 1) 算术自检：不用显卡，89 项全过才说明 README 的每个数字都能从 data/ 复现
+# 1) 算术自检：不用显卡，全过才说明 README 的每个数字都能从 data/ 复现
 py tests/test_fit.py
 
 # 2) 语法自检
@@ -25,7 +25,10 @@ py -m py_compile scripts/ollama_probe.py
 期望输出：
 
 ```
-all 89 checks passed - every number in README.md is reproducible from data/.
+all 93 checks passed - every number in README.md is reproducible from data/
+
+py tests/test_replay.py
+:: all 15 replay checks passed - the reporting path prints what it claims to
 ```
 
 ```bash
@@ -70,6 +73,7 @@ docs/warehouse-story-zh.pdf
 requirements.txt
 scripts/ollama_probe.py
 tests/test_fit.py
+tests/test_replay.py
 ```
 
 这里**故意不写死数量**。之前写的是"正好 15 项"，结果后来加了 4 个文件没人改，读者一核对就
@@ -264,8 +268,9 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > optimistic), no output-quality test, and **I do not know what causes the step** — three candidate
 > mechanisms are listed, none confirmed.
 >
-> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 89 assertions that re-derive every number in the
-> README without a GPU, including the F test.
+> Repo: <link> — raw CSVs plus `tests/test_fit.py`, which re-derives every number in the
+> README without a GPU, including the F test, plus a second suite that runs the reporting
+> path itself against recorded VRAM levels.
 
 **注意最后一段**：把"我的结论脆弱在哪"主动写在帖子里。这是唯一能让 HN 那群人不喷你的方式，
 也是唯一能让人相信其余部分的理由。
@@ -296,8 +301,9 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > 我没搞定的也写在 README 里：每个点只加载一次（没有纯重复，误差棒偏乐观）、
 > q8_0 输出质量没测、**台阶机制不明**（列了三个候选，一个都没确认）。
 >
-> 脚本约 880 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，89 项断言，
-> 不插显卡就能把 README 里每个数字复算一遍，包括那个 F 检验。地址：<link>
+> 脚本约 930 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，
+> 不插显卡就能把 README 里每个数字复算一遍，包括那个 F 检验；另有一组回放测试，
+> 用录下来的显存电平跑一遍报告路径，连打印出来的句子都有测试。地址：<link>
 
 ### 3.4 发帖纪律
 
@@ -383,5 +389,5 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf --title "v0.1.0 — first m
 **最后一条不是技术，是纪律：**
 
 发布的价值不在"发出去"这个动作，在于你被迫把每个数字都算到能自证。
-`tests/test_fit.py` 那 89 项检查，就是你以后敢在任何人面前说"这个数你可以自己验"的底气。
+`tests/test_fit.py` 里的那些检查，就是你以后敢在任何人面前说"这个数你可以自己验"的底气。
 没有它，仓库只是一份 PPT；有了它，才是一份可以被陌生人审计的证据。

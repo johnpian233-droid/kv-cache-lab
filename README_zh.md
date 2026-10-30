@@ -30,6 +30,22 @@
 
 ## 更新日志
 
+- **2026.10.30 v0.2.2 —— 出报告那段代码从来没有测试，而它印的是 `+0.00`。** 三处缺陷会改变
+  屏幕上的数字：台阶分析说「直线斜率被抬高 `+0.00 KiB/token`」，因为它拿同区域斜率的两个估计
+  互减（正确答案是 **1.89**）；`--bracket` 在没带 `--aba` 时把最大的上下文静默踢出拟合，而那
+  正是杠杆最长的点；`stepfit` 接受「四个点、单侧只有一点」的输入，那里 `df=1`，F 值不管数据
+  如何都会发散。另有六处**会在没有测量结果的地方造出一个数**：空闲读数全失败时沿用上一行的
+  基线，得出 `delta = 0 − idle` 还照样拟合；峰值列表是闭包变量，上一行残留的采样线程会把读数
+  写进下一行；`--kv-bytes` 填了非标准值时被记成 `kv_type_verified=True`；`num_ctx` 重复时每个
+  系数都印成 `nan` 而退出码仍是 0；`--model qwen2.5` 永远匹配不上 `/api/ps` 返回的
+  `qwen2.5:latest`，模型还在占显存却判为「已卸载」；单卡机器上 `--gpu 3` 静默测了 0 号卡。
+  `tests/test_replay.py` 用录下来的显存电平跑真实的报告路径，**一句打印错话也能让测试挂掉**。
+  自检 89 → **93** 项，另加 23 项回放断言。没有任何测量值变动。
+- **2026.10.30 v0.2.1 —— 两处抄错，其中一处把结论写成了反面。** q8_0 的台阶被写成 +67.1 MiB
+  （那是 *f16* 的数）；复现那一节把一列 Δ 的斜率配上了另一列 Δ 的台阶，读者拿同页的表格根本
+  复算不出来。复现 CSV 还带着机器主人的绝对本地路径，每行都有，而这是个公开仓库。只动文档；
+  自检 89 → 89 项。*这条日志是 v0.2.2 才补上的——tag 和 Release 当时都已存在，但两个 README
+  的更新日志里都没提。*
 - **2026.10.30 v0.2.0 —— q8_0 那一组重测了，复现到 4 MiB。** 同样五个上下文长度跑第二遍：
   空闲值取中位数、加载后取峰值、卸载判定走 `/api/ps` 而不是显存阈值、KV 类型从服务端自己的
   启动环境里读出来。结果 19.08 → **19.17** KiB/token，台阶 +56.2 → **+59.8** MiB，位置不变
@@ -441,6 +457,7 @@ cd kv-cache-lab
 
 # 可选：用仓库里的 CSV 复核算术（不需要显卡）
 python tests/test_fit.py
+python tests/test_replay.py
 
 # 没有模型就先拉一个
 ollama pull qwen2.5:1.5b
@@ -530,8 +547,10 @@ ollama serve
 ```
 scripts/ollama_probe.py        唯一的脚本，纯标准库
 tests/test_fit.py              不用显卡，从 data/ 重算本 README 的每个数字
+tests/test_replay.py           用录下来的电平跑报告路径，打印出来的话也有测试
 data/*.csv                     原始测量数据，含出处信息列
 docs/kv-cache-report-zh.pdf    15 页中文报告（v0.1.1 快照）
+docs/warehouse-story-zh.pdf    10 页通俗版，用仓库进销存类比讲同一个结论
 docs/PUBLISHING-zh.md          这个仓库是怎么发出去的，一步步来（中文）
 .github/ISSUE_TEMPLATE/        「报上你的数字」issue 表单
 CITATION.cff                   GitHub「引用此仓库」用的元数据
@@ -546,8 +565,10 @@ README.md                      本文件英文版
 |---|---|
 | 原始测量 | `data/ollama_probe_f16.csv`、`data/ollama_probe_q8_0.csv`——每次加载一行，带出处列 |
 | 复现数据 | `data/ollama_probe_q8_0_replication.csv`——q8_0 那一组按 v0.2 协议重测，含 `idle_mib`、`size_vram_mib` 和已校验的 `kv_type_verified` 标记 |
-| 重新推导 | `python tests/test_fit.py`——89 项断言，纯标准库 |
+| 重新推导 | `python tests/test_fit.py`——93 项断言，纯标准库 |
+| 报告路径 | `python tests/test_replay.py`——23 项；用录下来的显存电平跑 `main()`，不需要显卡 |
 | 重新测量 | `python scripts/ollama_probe.py --kv-bytes <b> --tag <name> --samples 9 --aba`——需要 Ollama 和 `nvidia-smi` |
+| 通俗版 | `docs/warehouse-story-zh.pdf`——10 页中文。用仓库进销存的三本账讲同一件事，从一行「入库 1、出库 24、在架 −23」的负库存讲起，不需要统计学基础。 |
 | 写下来的推导 | `docs/kv-cache-report-zh.pdf`——中文，15 页。**这是 v0.1.1 的快照**：它早于 v0.1.2 的二次模型对照与审计修正。它和本 README 冲突时，以 README 和 CSV 为准。 |
 
 CSV 是第一手记录。**如果本 README 的某个数字和 CSV 冲突，CSV 是对的，README 是 bug。**

@@ -18,7 +18,7 @@ Method
 ------
 For each num_ctx:
   1. unload the model        (`ollama stop`)
-  2. confirm it is gone      (`ollama ps`, not a VRAM threshold - see ollama_ps)
+  2. confirm it is gone      (/api/ps, not a VRAM threshold - see wait_unloaded)
   3. sample the idle floor   -> idle baseline (median of 5)
   4. load at that num_ctx    -> loaded VRAM (peak, not median)
   5. delta = loaded - idle
@@ -99,6 +99,21 @@ def _gpu_used(gpu=0):
         return None
 
 
+def gpu_count():
+    """How many GPUs nvidia-smi reports, or None if it cannot say."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode != 0:
+            return None
+        n = len([ln for ln in out.stdout.splitlines() if ln.strip()])
+        return n or None
+    except Exception:
+        return None
+
+
 def api(host, path, payload=None, timeout=900):
     url = host.rstrip("/") + path
     if payload is None:
@@ -167,6 +182,25 @@ def server_kv_type():
     return None, None
 
 
+def _same_model(a, b):
+    """Do these two model names refer to the same thing?
+
+    Ollama normalises an untagged name to `:latest` on the server side, so `--model
+    qwen2.5` and the `/api/ps` entry `qwen2.5:latest` are the same model. Exact string
+    equality says they are different, which makes api_ps() return (False, None) - that is,
+    "not resident" - and wait_unloaded() then returns immediately for a model that is
+    still holding VRAM. Every delta in the run would inherit a loaded baseline.
+    """
+    if not a or not b:
+        return False
+
+    def norm(s):
+        s = s.strip().lower()
+        return s if ":" in s else s + ":latest"
+
+    return norm(a) == norm(b)
+
+
 def api_ps(host, model):
     """(running, size_vram_mib) from /api/ps, in exact bytes.
 
@@ -180,7 +214,8 @@ def api_ps(host, model):
     except Exception:
         return None, None
     for m in d.get("models", []):
-        if model is None or m.get("name") == model or m.get("model") == model:
+        if (model is None or _same_model(m.get("name"), model)
+                or _same_model(m.get("model"), model)):
             sv = m.get("size_vram")
             return True, (sv / MIB) if sv else None
     return False, None
@@ -189,7 +224,7 @@ def api_ps(host, model):
 def wait_unloaded(host, model, threshold=None, tries=60, gpu=0):
     """Wait until the model is out of VRAM. Returns (ok, how).
 
-    `ollama ps` (via /api/ps) is authoritative. The VRAM threshold is only a fallback
+    `/api/ps` is authoritative. The VRAM threshold is only a fallback
     for machines where the API is unreachable, and it is a blunt instrument: it cannot
     tell a resident model from a desktop that grew.
 
@@ -205,7 +240,7 @@ def wait_unloaded(host, model, threshold=None, tries=60, gpu=0):
     for _ in range(tries):
         running, _ = api_ps(host, model)
         if running is False:
-            return True, "ollama ps"
+            return True, "api/ps"
         if running is None and threshold is not None:
             v = _gpu_used(gpu)
             if v is not None and v <= threshold:
@@ -213,7 +248,7 @@ def wait_unloaded(host, model, threshold=None, tries=60, gpu=0):
         time.sleep(0.5)
     running, _ = api_ps(host, model)
     if running is False:
-        return True, "ollama ps"
+        return True, "api/ps"
     return False, "timeout"
 
 
@@ -321,14 +356,25 @@ def stepfit(xs, ys, step_at):
     The F statistic compares this model against the plain line. With n points
     the step model spends one extra parameter, so df goes from n-2 to n-3.
 
-    Returns a dict, or None when there are too few points on either side.
+    Returns a dict, or None when the data cannot support the test.
+
+    The guards below are not defensive padding; each one corresponds to a way this
+    function used to announce a step that the data did not contain.
+
+    A single point on the left side does not establish a level - it is a lever, and
+    the "step" is whatever that one point happens to sit on. Requiring 2 on both
+    sides is the minimum for a shift to be seen rather than assumed.
+
+    And with df_step = 1 the model has as many parameters as the data can pin down,
+    so SSE collapses toward zero and F diverges regardless of the truth. A statistic
+    with one residual degree of freedom is arithmetic, not a test.
     """
     n = len(xs)
-    if n < 4:
+    if n < 5:
         return None
     left = [y for x, y in zip(xs, ys) if x < step_at]
     right = [y for x, y in zip(xs, ys) if x >= step_at]
-    if len(left) < 1 or len(right) < 2:
+    if len(left) < 2 or len(right) < 2:
         return None
 
     design = [[1.0, x, 1.0 if x >= step_at else 0.0] for x in xs]
@@ -382,7 +428,13 @@ def polysse(xs, ys, deg):
 
     Fitted in scaled coordinates: raw `num_ctx` runs to 32768, and the normal
     equations for a quadratic on x^4 are hopelessly ill-conditioned unscaled.
+
+    Refuses when the polynomial has as many parameters as there are points: three points
+    and a quadratic is an exact fit, SSE 0, and comparing that 0 against a step model
+    would announce "infinitely better" on the strength of having no data left over.
     """
+    if len(xs) <= deg + 1:
+        return None
     n = deg + 1
     xm = float(max(xs)) or 1.0
     u = [x / xm for x in xs]
@@ -442,6 +494,12 @@ def main():
     args = ap.parse_args()
 
     gpu_idx = args.gpu
+    # _gpu_used() falls back to GPU 0 when the index is out of range, so `--gpu 3` on a
+    # single-GPU box silently measures GPU 0 and labels the run with the wrong card.
+    n_gpu = gpu_count()
+    if n_gpu is not None and not (0 <= gpu_idx < n_gpu):
+        sys.exit(f"[error] --gpu {gpu_idx} does not exist: nvidia-smi reports "
+                 f"{n_gpu} GPU(s), indexed 0..{n_gpu - 1}.")
     used = lambda: _gpu_used(gpu_idx)  # noqa: E731
 
     # ---- resolve KV byte size (this drives the theory column)
@@ -474,7 +532,15 @@ def main():
         print("           whatever YOU declared, not what the server is doing. Any")
         print("           comparison against a run made under a different environment is")
         print("           unverified. Check `OLLAMA_KV_CACHE_TYPE` yourself.")
-    elif declared_type and srv_type != declared_type:
+    elif declared_type is None:
+        # A custom --kv-bytes that matches no known type cannot be compared against the
+        # server. This used to fall through to the `else` below and record
+        # kv_type_verified=True - a claim of verification for a check never performed.
+        print(f"[kv check] --kv-bytes {kv_bytes:g} matches none of the known types "
+              f"({', '.join(sorted(KV_BYTES))}),")
+        print(f"           so it cannot be compared with the server's {srv_type}. The CSV")
+        print("           will say kv_type_verified=False: unverified, not wrong.")
+    elif srv_type != declared_type:
         print("=" * 72)
         print(f"[kv check] MISMATCH. The server is running OLLAMA_KV_CACHE_TYPE={srv_type}")
         print(f"           but you passed bytes for {declared_type}. Ollama ignores this")
@@ -489,7 +555,11 @@ def main():
         kv_verified = True
 
     print(f"[ollama]   {ver}    model: {args.model}")
-    print(f"[kv type]  {kv_label}" + (f"  (declared via --kv-bytes)" if kv_bytes else ""))
+    # `kv_bytes` is always truthy (0 would have failed the theory guard), so testing it
+    # here labelled every run "declared via --kv-bytes", including runs that inferred the
+    # type from the environment. Test the argument instead.
+    print(f"[kv type]  {kv_label}"
+          + ("  (declared via --kv-bytes)" if args.kv_bytes is not None else "  (inferred)"))
     if kv_verified:
         print(f"[kv check] server agrees: OLLAMA_KV_CACHE_TYPE={srv_type}  ({srv_src})")
     print(f"[geometry] layers={args.layers} kv_heads={args.kv_heads} head_dim={args.head_dim}")
@@ -542,17 +612,30 @@ def main():
             if v is not None:
                 idle_series.append(v)
             time.sleep(0.3)
-        if idle_series:
-            cur_idle = statistics.median(idle_series)
+        if not idle_series:
+            # Every reading failed. Carrying the previous row's baseline forward is the
+            # worst of the available options: delta becomes 0 - previous_idle, a large
+            # negative number that enters the fit and the CSV looking like a measurement.
+            # Drop the row and say so.
+            print(f"{L:>8} | FAILED  baseline: nvidia-smi returned nothing")
+            rows.append(dict(num_ctx=L, loaded_mib=None, delta_mib=None,
+                             theory_kv_mib=None, load_sec=None))
+            continue
+        cur_idle = statistics.median(idle_series)
 
         peak = [0]
         stop_flag = threading.Event()
 
-        def sampler():
-            while not stop_flag.is_set():
+        # The defaults are not cosmetic. `peak` and `stop_flag` are rebound on the next
+        # iteration of this loop, which makes them cell variables; a sampler left over
+        # from a previous row would then read the NEW list and the NEW event, and its
+        # stale readings would land in the current row's peak. Binding them at definition
+        # time gives each thread its own row's objects.
+        def sampler(_peak=peak, _stop=stop_flag):
+            while not _stop.is_set():
                 v = used()
-                if v is not None and v > peak[0]:
-                    peak[0] = v
+                if v is not None and v > _peak[0]:
+                    _peak[0] = v
                 time.sleep(0.15)
 
         th = threading.Thread(target=sampler, daemon=True)
@@ -600,7 +683,17 @@ def main():
         # published as "the step is gone". The idle side wants a median (noise only), the
         # loaded side wants a peak (the state IS the allocation). They are not symmetric.
         after = used()
-        loaded = max([peak[0], after or 0] + series) if (series or after) else peak[0]
+        # `peak` is initialised to 0 as a sentinel, so 0 must not be read back as a
+        # measurement. Collect the readings that actually exist and require at least one:
+        # otherwise loaded=0 and delta=-idle, a large negative number that fits and prints
+        # as if it were data.
+        readings = [v for v in ([after] + series + [peak[0]]) if v]
+        if not readings:
+            print(f"{L:>8} | FAILED  loaded: nvidia-smi returned nothing")
+            rows.append(dict(num_ctx=L, loaded_mib=None, delta_mib=None,
+                             theory_kv_mib=None, load_sec=None))
+            continue
+        loaded = max(readings)
         spread = (max(series) - min(series)) if len(series) > 1 else 0
         delta = loaded - cur_idle
         theory = theory_kv_kib(L, args.layers, args.kv_heads, args.head_dim, kv_bytes) / 1024
@@ -635,13 +728,41 @@ def main():
             r["delta_bracket_mib"] = round(r["loaded_mib"] - base, 1)
     bracketed = [r for r in rows if r.get("delta_bracket_mib") is not None
                  and not r.get("is_probe")]
+    # The final load has no later idle reading to close its bracket, so it silently
+    # fell out of the bracketed fit - and it is the point with the longest lever arm,
+    # the one that does most to set the slope. Say so, instead of letting the refit
+    # quietly run on four points while the per-point fit runs on five.
+    unbracketed = [r for r in rows if r.get("delta_bracket_mib") is None
+                   and not r.get("is_probe") and r.get("loaded_mib") is not None]
+    if len(bracketed) >= 3 and unbracketed:
+        missed = ", ".join(str(r["num_ctx"]) for r in unbracketed)
+        # Only the final load of a healthy run is missing its bracket. If some other row
+        # is missing one, the load after it failed - a different situation, and naming it
+        # "the largest context" would send the reader looking in the wrong place.
+        tail = unbracketed[-1] is rows[-1]
+        print(f"[bracket] NOTE: num_ctx={missed} has no closing idle reading, so it is")
+        print("          excluded from the bracketed fit.")
+        if tail:
+            print("          That is the last load of the run, and the largest context - the")
+            print("          point that constrains the slope most. Re-run with --aba to close")
+            print("          its bracket and keep it.")
+        else:
+            print("          That row is not the last one, so the load after it failed or was")
+            print("          skipped and nothing closed its bracket. The per-point fit above")
+            print("          is unaffected; only this second-opinion refit is short a point.")
+        if not args.bracket:
+            print("          (--bracket was not requested; this refit is printed anyway, as a")
+            print("          cross-check on the baseline convention.)")
     if len(bracketed) >= 3:
         print()
         print("[bracket] same loads, baseline = mean of the idle readings either side")
         print(f"          {'num_ctx':>8} {'loaded':>8} {'idle pre':>9} {'idle post':>10}"
               f" {'mean':>7} {'delta':>8} {'vs point':>9}")
+        # Locate by identity, not by equality: two rows of a clean run can hold identical
+        # values, and list.index() would then point both of them at the first one.
+        pos = {id(r): i for i, r in enumerate(rows)}
         for r in bracketed:
-            j = rows.index(r)
+            j = pos[id(r)]
             post = rows[j + 1]["idle_mib"] if j + 1 < len(rows) else None
             print(f"          {r['num_ctx']:>8} {r['loaded_mib']:>8.0f}"
                   f" {r['idle_mib']:>9} {post if post is not None else '-':>10}"
@@ -720,12 +841,34 @@ def main():
         unload(args.model)
         sys.exit("[error] fewer than 2 valid samples — cannot fit")
 
+    # A repeated num_ctx makes the regression singular: sum((x-mean)^2) is 0, the slope
+    # divides by it, and every number below prints as nan while the exit code stays 0.
+    # The CSV is already on disk at this point, so refuse loudly rather than write a
+    # report full of nan.
+    if len(set(xs)) < len(xs):
+        unload(args.model)
+        dupes = sorted({x for x in xs if xs.count(x) > 1})
+        sys.exit(f"[error] num_ctx {dupes} appears more than once; the fit needs distinct "
+                 f"x values.\n        The CSV was written, but no report was produced.")
+
     print()
     print("=" * 72)
     print(f"[fit]  delta = {a * 1024:.2f} KiB/token x num_ctx + {b:.0f} MiB"
           f"     R^2 = {r2:.5f}")
+    # n belongs on this line. Without it a dropped point is invisible, and a four-point
+    # fit reads exactly like a five-point one.
+    print(f"       on {len(good)} points ({delta_key}), num_ctx = "
+          f"{', '.join(str(x) for x in xs)}")
     # theory_kv_kib() already returns KiB, so no /1024 here.
     theory_per_tok = theory_kv_kib(1, args.layers, args.kv_heads, args.head_dim, kv_bytes)
+    if theory_per_tok <= 0:
+        # --layers 0, --kv-heads 0 or --kv-bytes 0 make the theory column zero, and the
+        # ratio just below divides by it. A traceback is a worse error message than this.
+        unload(args.model)
+        sys.exit(f"[error] geometry gives {theory_per_tok:g} KiB/token of KV cache, so the "
+                 f"theory column is meaningless.\n"
+                 f"        Check --layers {args.layers}, --kv-heads {args.kv_heads}, "
+                 f"--head-dim {args.head_dim}, --kv-bytes {kv_bytes:g}.")
     print(f"       theory: {theory_per_tok:.2f} KiB/token  "
           f"({kv_label})    measured/theory = {a * 1024 / theory_per_tok:.2f}x")
     se_a, se_b, half_a, half_b, df = fit_uncertainty(xs, ys, a, b)
@@ -754,15 +897,22 @@ def main():
     elif r2 > 0.99:
         print("       R^2 near 1; again a formality. Read the residuals below, not this.")
     else:
-        print("       WARNING: poor linearity. Check for leftover VRAM from other apps.")
+        # Low R^2 has two explanations and this line used to name only one of them.
+        # A real level shift also depresses it, and blaming leftover VRAM for a step
+        # sends the reader to chase a process that is not there.
+        print("       WARNING: poor linearity. Either leftover VRAM from another app, or")
+        print("                a real level shift - the step test below separates them.")
     print("=" * 72)
 
     # ---- was the baseline stable? This check did not exist before v0.1.3, and its
     # absence is what let a 26 MiB drift hide inside delta_mib.
+    # `good` excludes the A-B-A probe, and the probe is the LAST reading of the run. Using
+    # it here understated the drift by exactly the span the probe was added to measure.
+    idle_all = [r["idle_mib"] for r in rows if r.get("idle_mib") is not None]
     idle_series = [r["idle_mib"] for r in good if r.get("idle_mib") is not None]
-    drift = (max(idle_series) - min(idle_series)) if len(idle_series) > 1 else 0
-    if idle_series:
-        print(f"[idle]    baseline across the run: {idle_series[0]} -> {idle_series[-1]} MiB"
+    drift = (max(idle_all) - min(idle_all)) if len(idle_all) > 1 else 0
+    if idle_all:
+        print(f"[idle]    baseline across the run: {idle_all[0]} -> {idle_all[-1]} MiB"
               f"   (spread {drift} MiB)")
         if drift > 5:
             print("          WARNING: the baseline moved while measuring. Every delta inherited")
@@ -780,7 +930,7 @@ def main():
         print("-" * 72)
         print(f"[step] testing a one-time level shift, best location num_ctx={st['step_at']}")
         print(f"       y = {st['intercept']:.0f} + {st['slope'] * 1024:.2f} KiB/token x N"
-              f" + {st['step']:+.1f} MiB  for N >= {st['step_at']}")
+              f" {st['step']:+.1f} MiB  for N >= {st['step_at']}")
         print(f"       SSE {st['sse_lin']:.1f} -> {st['sse']:.1f}   df {st['df_lin']} -> {st['df']}"
               f"   F(1,{st['df']}) = {st['f']:.1f}")
         if st["slope_hi"] == st["slope_hi"]:
@@ -790,9 +940,14 @@ def main():
             print(f"       -> F critical value unknown for df2={st['df']} (table covers 1..20);")
             print("          judge this one by eye, not by the default threshold.")
         elif st["f"] > fcrit:
-            spread = (st["slope"] - st["slope_hi"]) * 1024
+            # The claim is about the STRAIGHT-LINE slope, so the inflation is
+            # (line slope) - (step-model slope). This used to be written as
+            # (step slope) - (slope from the high points only), which are two
+            # estimates of the same within-region slope; it printed +0.00 forever.
+            inflation = (a - st["slope"]) * 1024
             print(f"       -> F {st['f']:.1f} > {fcrit:.3f} at 5%: the step wins.")
-            print(f"          The straight-line slope is inflated by {spread:+.2f} KiB/token,")
+            print(f"          The straight-line slope is inflated by {inflation:+.2f} KiB/token")
+            print(f"          ({a * 1024:.2f} straight vs {st['slope'] * 1024:.2f} with the step),")
             print("          i.e. the step divided by the largest context. Do not quote the")
             print("          straight-line slope as per-token cost.")
             # The location was chosen by searching, so the nominal 5% is optimistic.
@@ -856,7 +1011,8 @@ def main():
         print()
         print("-" * 72)
         print("[bracket] the same loads, drift-cancelled baseline -> refit")
-        print(f"          slope {ba * 1024:.2f} KiB/token   R^2 {br2:.5f}")
+        print(f"          slope {ba * 1024:.2f} KiB/token   R^2 {br2:.5f}"
+              f"   on {len(bx)} points, num_ctx = {', '.join(str(x) for x in bx)}")
         if bst:
             print(f"          step at {bst['step_at']}: {bst['step']:+.1f} MiB"
                   f"   SSE {bst['sse_lin']:.1f} -> {bst['sse']:.1f}"
@@ -872,7 +1028,9 @@ def main():
     print("Extrapolate to real models (f16 KV, formula 2*layers*kv_heads*head_dim*2B)")
     print(f"{'model':<26}{'KV/token':>11}{'32K':>10}{'128K':>11}")
     refs = [
-        ("Qwen2.5-1.5B (this box)", args.layers, args.kv_heads, args.head_dim),
+        # The column is f16 arithmetic even for this box, whose KV type may be lower
+        # precision. Naming it "this box" invited reading the row as the measurement.
+        ("Qwen2.5-1.5B (this box, f16)", args.layers, args.kv_heads, args.head_dim),
         ("Llama-3-8B", 32, 8, 128),
         ("Qwen2.5-72B", 80, 8, 128),
     ]

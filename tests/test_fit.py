@@ -164,6 +164,23 @@ def main():
     check("f16 step per 32K token = +2.10", f_step_per_tok, 2.10, 0.02)
     check("inflation = step per token", (fa * 1024) - (fst["slope"] * 1024), f_step_per_tok, 0.05)
 
+    # ------------------------------------------- stepfit must refuse, not invent (v0.2.2)
+    # The script used to print the inflation as (step slope - high-points slope), which
+    # are two estimates of the same within-region slope and therefore agree to ~0.00.
+    # The assertion above is what the print should say; these pin the guards around it.
+    four_x = [2048, 4096, 8192, 16384]
+    four_y = [1138, 1173, 1301, 1441]
+    check("stepfit refuses n=4 (df would be 1)",
+          1.0 if probe.stepfit(four_x, four_y, 8192) is None else 0.0, 1.0, 0)
+    check("stepfit refuses a lone point on the left side",
+          1.0 if probe.stepfit(fx, fy, 4096) is None else 0.0, 1.0, 0)
+    check("stepfit still fits the real 5-point grid",
+          1.0 if probe.stepfit(fx, fy, 8192) is not None else 0.0, 1.0, 0)
+    # and the two candidate readings of "inflation" must not be interchangeable:
+    # the wrong one is near zero, the right one is ~2 KiB/token.
+    check("wrong inflation formula is ~0, not ~2",
+          abs((fst["slope"] - fst["slope_hi"]) * 1024) < 0.05, 1.0, 0)
+
     # ------------------------------------------- the baseline nobody recorded (v0.1.3)
     ffx, ffd, ffl, ffidle = read_csv_full("f16")
     qqx, qqd, qql, qqidle = read_csv_full("q8_0")

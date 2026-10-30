@@ -29,7 +29,7 @@ authors:
     given-names: "Kong"
     alias: "johnpian233-droid"
     website: "https://github.com/johnpian233-droid"
-version: "0.2.0"
+version: "0.2.2"
 date-released: "2026-10-30"
 license: MIT
 repository-code: "https://github.com/johnpian233-droid/kv-cache-lab"
