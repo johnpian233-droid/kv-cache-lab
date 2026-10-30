@@ -34,6 +34,15 @@ No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
 
 ## News
 
+- **2026.10.30 v0.2.0 — the q8_0 grid was re-measured, and it reproduced to 4 MiB.** A second
+  pass over the same five contexts, with median-sampled idles, peak-sampled loads, unload
+  confirmed through `/api/ps` instead of a VRAM threshold, and the KV type read out of the
+  server's own startup environment, lands on 19.08 → **19.09** KiB/token and +67.1 → **+59.8** MiB
+  at the same step location — on a desktop carrying **1078 MiB** more VRAM. The runner's own
+  `size_vram` is now recorded per row as an independent cross-check (it agrees with the delta to
+  a constant ~105 MiB), and `--kv-bytes` can no longer relabel a run the server disagrees with.
+  One honest gap: **f16 was not re-run**, because the server's `OLLAMA_KV_CACHE_TYPE` is still
+  q8_0. Self-checks 83 → 89. No number in the existing analysis changed.
 - **2026.10.30 v0.1.3 — one claim withdrawn, one column found.** `loaded_mib − delta_mib`
   recovers the idle reading behind every row, and it shows the f16 run held a baseline to **1 MiB**
   while the q8_0 run drifted **26 MiB**. f16 is unaffected (both baseline conventions give 29.99,
@@ -53,7 +62,7 @@ No frameworks, no dependencies. One script, two CSVs, and the arithmetic.
 - **2026.10.30 v0.1.0 — first public release.** Two configurations (f16, q8_0) across five
   context lengths each. A straight-line fit gives 32.11 / 19.08 KiB/token, then fails a
   residual check: modelling a one-time step at 8192 fits the same data to ±1 MiB and moves the
-  slopes to **29.99 / 17.31**. 83 self-checks recompute every number quoted here without a GPU. 15-page
+  slopes to **29.99 / 17.31**. 89 self-checks recompute every number quoted here without a GPU. 15-page
   Chinese write-up with charts and derivations (`docs/kv-cache-report-zh.pdf`).
 - **Roadmap** — q4_0 actually measured (currently refused on principle, see
   `### The third rung`), repeated points at every grid position for a real error bar,
@@ -328,8 +337,52 @@ denominator cannot be separated from lack of fit. Treat F as an upper bound on h
 data prefer a step, not as a calibrated p-value.
 
 So the honest statement is: **the slope is 30, not 32; the step is real; and neither has a
-trustworthy error bar yet.** Repeating each grid point is the experiment that would fix it,
-and it has not been run. It is listed as the first item in `## What this repo is not`.
+trustworthy error bar yet.** Repeating each grid point is the experiment that would fix it. The
+q8_0 grid has since been repeated once, under a different protocol, and reproduced to 4 MiB (see
+*Independent replication*) — that is one replicate, not a variance estimate, and the f16 grid has
+not been repeated at all. It remains the first item in `## What this repo is not`.
+
+### Independent replication
+
+The q8_0 grid was re-measured after the fact with a different protocol: idle sampled five times
+and taken as a median instead of once, loaded read nine times and taken as a peak, unload
+confirmed through `/api/ps` instead of a VRAM threshold, and the KV cache type read out of the
+server's own startup environment instead of assumed. The desktop was also busier — **1078 MiB**
+more VRAM in use at the idle floor.
+
+| num_ctx | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---|---|---|---|---|
+| first run (Δ MiB) | 1139 | 1177 | 1297 | 1445 | 1714 |
+| replication (Δ MiB) | 1138 | 1173 | 1301 | 1441 | 1716 |
+| difference | −1 | −4 | +4 | −4 | +2 |
+
+Every point lands within 4 MiB of the original, on a desktop that had moved by more than a
+gigabyte in absolute VRAM. The straight-line slope is 19.08 KiB/token before and 19.09 after;
+the step is +67.1 MiB before and +59.8 after, at the same location.
+
+That is the strongest evidence in this repository, and it is evidence for the *method* rather
+than for the model: a delta absorbs a 1078 MiB change in the desktop and a change of measurement
+protocol, and comes back four MiB wide. It is also what lets the q8_0 baseline drift above be
+called a limitation rather than a defect — the number it moved did not move.
+
+The f16 leg was **not** re-run: the server's `OLLAMA_KV_CACHE_TYPE` had been changed to q8_0
+between the two original runs and is still q8_0, so an f16 measurement now requires restarting
+`ollama serve`. Its internal cross-check is that the f16 and q8_0 runs differ by 418 MiB of model
+footprint at 32768, against a predicted `(28 − 14.875) × 32768 / 1024 = 420 MiB`. That is
+consistent with the two runs having really been f16 and q8_0, but it is inference, not a
+replicate.
+
+Two defects the replication found, both in the tooling rather than the data:
+
+- The unload check used to poll `nvidia-smi` against an absolute threshold. When the desktop grew
+  150 MiB mid-session the threshold became unsatisfiable, and the script reported *"model may not
+  be fully unloaded"* three times while `ollama ps` was empty throughout. It now asks Ollama,
+  which is the only party that knows.
+- `--kv-bytes` does not configure anything; it only **labels**. A run executed while the server
+  was on q8_0, but passed `--kv-bytes 2`, was recorded as f16 with a slope of 19.0 KiB/token —
+  1.28x the q8_0 theory and 0.68x the f16 theory. It was caught only because it matched the older
+  q8_0 run to within 4 MiB. The script now reads `OLLAMA_KV_CACHE_TYPE` out of the server's
+  startup log and refuses to write a CSV when the label disagrees.
 
 ### Raw measurements
 
@@ -478,10 +531,14 @@ Key flags:
 
 | flag | meaning |
 |---|---|
-| `--kv-bytes` | bytes per KV element: f16=2, q8_0=1.0625, q4_0=0.5625 |
+| `--kv-bytes` | bytes per KV element: f16=2, q8_0=1.0625, q4_0=0.5625. **Labels the run; it does not configure Ollama** — the script reads the server's `OLLAMA_KV_CACHE_TYPE` and refuses to run if the two disagree |
 | `--seqs` | context lengths to test (default `2048 4096 8192 16384 32768`) |
 | `--layers --kv-heads --head-dim` | model geometry, used for the theory column |
-| `--settle` | MiB tolerance when detecting a fully unloaded GPU |
+| `--samples` | `nvidia-smi` readings per point, peak reported (default 7; the measurement used 9) |
+| `--aba` | re-measure the first context at the end, as a baseline drift probe |
+| `--bracket` | use the mean of the idle readings either side of each load, cancelling monotone drift |
+| `--settle` | MiB tolerance for the fallback unload check, used only if `/api/ps` is unreachable |
+| `--allow-kv-mismatch` | proceed despite a label/environment mismatch, and record that it was unverified |
 
 ### Switching the actual KV cache type
 
@@ -500,20 +557,27 @@ ollama serve
 
 For each `num_ctx`, in order:
 
-1. `ollama stop <model>` to evict the model from VRAM.
-2. Poll `nvidia-smi --query-gpu=memory.used` every 0.5 s until it stops falling, up to 90 polls
-   (`--settle`, default 32 MiB tolerance). The value read at that point is **idle**.
-3. Load the model at that `num_ctx` with a single request, and wait for the load to return.
-4. Read `nvidia-smi` again. **loaded − idle is the measurement**, and it is the only number the
-   fit uses.
+1. `ollama stop <model>`, then poll `/api/ps` until the model is gone. **Do not use a VRAM
+   threshold for this.** An absolute threshold cannot tell a resident model from a desktop that
+   grew, and on this machine an idle floor that rose 150 MiB over ten minutes produced three
+   "model may not be fully unloaded" warnings while `ollama ps` was empty the whole time.
+2. Sample `nvidia-smi` five times and take the **median**. That is **idle**. One reading is a
+   coin flip — peak-to-peak swing was 32 MiB over 8 s on this desktop.
+3. Load the model at that `num_ctx` with a single request, then read `nvidia-smi` nine times and
+   take the **peak**. Loaded is a peak, not a median: the loaded state *is* the allocation, and
+   taking a median here shaves 300–600 MiB off the high contexts while looking exactly like a
+   smaller KV cost. That mistake was made and caught during v0.2 development.
+4. **loaded − idle is the measurement.** Cross-check it against the runner's own `size_vram`
+   from `/api/ps`. The two differ by a constant ~105 MiB of CUDA context; if the gap is *not*
+   constant, the baseline moved during the load and the row is suspect.
 
-Always compare **deltas**, never absolute VRAM. Desktop usage drifted by 419 MiB between the two
-runs in this repo; deltas absorbed it completely.
+Always compare **deltas**, never absolute VRAM. Desktop usage drifted by 1078 MiB between the
+original run and its replication; deltas absorbed it completely and the two agreed to 4 MiB.
 
 What is *not* controlled, and should be read as part of the error budget: GPU clock and power
 state are left to the driver, driver and CUDA versions are not recorded in the CSV, ambient load
 from the desktop is only reflected in the idle reading, and each configuration was loaded
-**once**. `load_sec` is written to the CSV for provenance but is not analysed.
+**once** per run. `load_sec` is written to the CSV for provenance but is not analysed.
 
 ### CSV format
 
@@ -550,12 +614,18 @@ Everything needed to reproduce the numbers is in this repository, and none of it
 | | |
 |---|---|
 | Raw measurements | `data/ollama_probe_f16.csv`, `data/ollama_probe_q8_0.csv` — one row per load, with provenance columns |
-| Re-derivation | `python tests/test_fit.py` — 83 checks, standard library only |
-| Measurement | `python scripts/ollama_probe.py --kv-bytes <b> --tag <name>` — needs Ollama and `nvidia-smi` |
+| Replication | `data/ollama_probe_q8_0_replication.csv` — the q8_0 grid re-measured under the v0.2 protocol, with `idle_mib`, `size_vram_mib` and a verified `kv_type_verified` flag |
+| Re-derivation | `python tests/test_fit.py` — 89 checks, standard library only |
+| Measurement | `python scripts/ollama_probe.py --kv-bytes <b> --tag <name> --samples 9 --aba` — needs Ollama and `nvidia-smi` |
 | Write-up | `docs/kv-cache-report-zh.pdf` — Chinese, 15 pages. **Snapshot of v0.1.1**: it predates the quadratic comparison and the audit corrections in v0.1.2. Where it disagrees with this README, the README and the CSVs are current. |
 
 The CSVs are the primary record. If a number in this README disagrees with a CSV, the CSV is
 right and the README is a bug.
+
+The two original CSVs are deliberately left as they were, including the columns they do **not**
+have. They carry no `idle_mib`, which is why the q8_0 baseline drift went unnoticed for two
+releases; it had to be recovered as `loaded − delta`. Adding the column retroactively would have
+erased the evidence that it was missing. The replication CSV has it.
 
 ## What this repo is not
 

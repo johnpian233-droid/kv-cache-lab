@@ -8,6 +8,8 @@ venv/
 # Runtime output
 *.log
 ollama_probe_run.csv
+scripts/ollama_probe_*.csv
+scripts/__pycache__/
 serve.log
 
 # OS / editor

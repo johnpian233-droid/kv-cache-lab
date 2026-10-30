@@ -18,9 +18,10 @@ Method
 ------
 For each num_ctx:
   1. unload the model        (`ollama stop`)
-  2. wait for VRAM to fall   -> idle baseline (desktop / other apps)
-  3. load at that num_ctx    -> loaded VRAM
-  4. delta = loaded - idle
+  2. confirm it is gone      (`ollama ps`, not a VRAM threshold - see ollama_ps)
+  3. sample the idle floor   -> idle baseline (median of 5)
+  4. load at that num_ctx    -> loaded VRAM (peak, not median)
+  5. delta = loaded - idle
 
 Weights are constant across runs, so the *slope* of delta vs num_ctx is the
 per-token KV cost. The intercept is the model's fixed footprint.
@@ -39,8 +40,8 @@ Usage
     # q8_0 KV cache
     python ollama_probe.py --tag q8_0 --kv-bytes 1.0625
 
-    # f16 KV cache
-    python ollama_probe.py --tag f16 --kv-bytes 2
+    # f16 KV cache, 9 readings per point, plus a baseline drift probe at the end
+    python ollama_probe.py --tag f16 --kv-bytes 2 --samples 9 --aba
 
     # custom model geometry
     python ollama_probe.py --model qwen2.5:7b --layers 28 --kv-heads 4 --head-dim 128
@@ -58,6 +59,8 @@ import csv
 import json
 import math
 import os
+import re
+import statistics
 import subprocess
 import sys
 import threading
@@ -119,14 +122,92 @@ def unload(model):
         return False
 
 
-def wait_idle(threshold, tries=90, gpu=0):
-    """Wait for VRAM to drop to `threshold` MiB. Returns (value, ok)."""
+def server_kv_type():
+    """The KV cache type the *server* is actually using, read from its own startup log.
+
+    Why this exists, and what it cost to learn. `--kv-bytes` is a labelling flag: it
+    tells this script what to print in the theory column and what to write into the
+    CSV. It does not tell Ollama anything. The real type comes from
+    OLLAMA_KV_CACHE_TYPE in the *server's* environment, set before `ollama serve`
+    started, and nothing in the request path can override it.
+
+    The consequence is not academic. During v0.2 development the server was on q8_0
+    while the operator passed `--kv-bytes 2`, so a run was recorded as f16 whose
+    measured slope was 19.0 KiB/token - which is 1.28x the q8_0 theory and 0.68x the
+    f16 theory. It matched the older q8_0 run to within 20 MiB at all five contexts,
+    which is how the mislabel was caught. A one-line flag had silently relabelled an
+    entire experiment, and the CSV column that was supposed to prove otherwise was a
+    copy of that same flag.
+
+    Returns (type_string, source) or (None, None) when the log cannot be read.
+    """
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Ollama", "server.log"),
+        os.path.join(os.path.expanduser("~"), ".ollama", "logs", "server.log"),
+    ]
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        # The last "server config" line is the running instance's environment.
+        hits = re.findall(r"OLLAMA_KV_CACHE_TYPE:([A-Za-z0-9_]+)", text)
+        if hits:
+            return hits[-1].lower(), path
+    return None, None
+
+
+def api_ps(host, model):
+    """(running, size_vram_mib) from /api/ps, in exact bytes.
+
+    Better than the CLI: `ollama ps` prints "1.7 GB", which is 102 MiB of rounding and
+    therefore useless as a check on a 400 MiB effect. /api/ps reports bytes, and
+    size_vram is the runner's own account of the VRAM it holds - an instrument that is
+    independent of nvidia-smi and of the desktop entirely.
+    """
+    try:
+        d = api(host, "/api/ps", timeout=20)
+    except Exception:
+        return None, None
+    for m in d.get("models", []):
+        if model is None or m.get("name") == model or m.get("model") == model:
+            sv = m.get("size_vram")
+            return True, (sv / MIB) if sv else None
+    return False, None
+
+
+def wait_unloaded(host, model, threshold=None, tries=60, gpu=0):
+    """Wait until the model is out of VRAM. Returns (ok, how).
+
+    `ollama ps` (via /api/ps) is authoritative. The VRAM threshold is only a fallback
+    for machines where the API is unreachable, and it is a blunt instrument: it cannot
+    tell a resident model from a desktop that grew.
+
+    Why ask Ollama instead of the GPU. The obvious unload check is "wait until VRAM
+    falls back to the baseline", and it is wrong. A desktop is not a constant: on the
+    machine this repo was measured on the idle floor climbed ~150 MiB over ten minutes
+    with nothing loaded at all (`ollama ps` empty the whole time). An absolute
+    threshold then fires for a reason that has nothing to do with the model - it
+    reports "model still resident" while the model has been gone for minutes. The
+    only party that knows whether a model holds VRAM is the process that put it
+    there, so ask that.
+    """
     for _ in range(tries):
-        v = _gpu_used(gpu)
-        if v is not None and v <= threshold:
-            return v, True
+        running, _ = api_ps(host, model)
+        if running is False:
+            return True, "ollama ps"
+        if running is None and threshold is not None:
+            v = _gpu_used(gpu)
+            if v is not None and v <= threshold:
+                return True, "vram threshold"
         time.sleep(0.5)
-    return _gpu_used(gpu), False
+    running, _ = api_ps(host, model)
+    if running is False:
+        return True, "ollama ps"
+    return False, "timeout"
 
 
 def theory_kv_kib(n_ctx, layers, kv_heads, head_dim, bytes_per_elem):
@@ -337,8 +418,20 @@ def main():
     ap.add_argument("--head-dim", type=int, default=128)
     ap.add_argument("--host", default="http://localhost:11434")
     ap.add_argument("--gpu", type=int, default=0)
+    ap.add_argument("--samples", type=int, default=7,
+                    help="nvidia-smi readings per point, peak reported. 1 reproduces the "
+                         "v0.1.x behaviour; 9-15 is what the v0.2 measurement used")
+    ap.add_argument("--aba", action="store_true",
+                    help="re-measure the first context at the end, as a baseline drift probe")
     ap.add_argument("--settle", type=int, default=32,
-                    help="MiB tolerance when detecting a fully unloaded model")
+                    help="MiB tolerance for the fallback unload check, used only when "
+                         "`ollama ps` is unavailable")
+    ap.add_argument("--allow-kv-mismatch", action="store_true",
+                    help="proceed even if the server's OLLAMA_KV_CACHE_TYPE disagrees "
+                         "with --kv-bytes (the CSV will say the label was unverified)")
+    ap.add_argument("--bracket", action="store_true",
+                    help="also report deltas against the mean of the idle readings that "
+                         "bracket each load (needs --aba to bracket the last point)")
     args = ap.parse_args()
 
     gpu_idx = args.gpu
@@ -364,9 +457,34 @@ def main():
         sys.exit(f"[error] cannot reach Ollama at {args.host}\n"
                  f"        is `ollama serve` running?  ({e})")
 
+    # ---- did the server actually agree to what we just labelled this run?
+    srv_type, srv_src = server_kv_type()
+    kv_verified = False
+    declared_type = next((k for k, v in KV_BYTES.items()
+                          if abs(v - kv_bytes) < 1e-9), None)
+    if srv_type is None:
+        print("[kv check] could not read the server's environment - the KV type below is")
+        print("           whatever YOU declared, not what the server is doing. Any")
+        print("           comparison against a run made under a different environment is")
+        print("           unverified. Check `OLLAMA_KV_CACHE_TYPE` yourself.")
+    elif declared_type and srv_type != declared_type:
+        print("=" * 72)
+        print(f"[kv check] MISMATCH. The server is running OLLAMA_KV_CACHE_TYPE={srv_type}")
+        print(f"           but you passed bytes for {declared_type}. Ollama ignores this")
+        print("           flag, so the run would be measured with the server's type and")
+        print(f"           labelled with yours - and the theory column would be wrong by")
+        print(f"           {kv_bytes / KV_BYTES.get(srv_type, kv_bytes):.2f}x.")
+        print(f"           (source: {srv_src})")
+        print("=" * 72)
+        if not args.allow_kv_mismatch:
+            sys.exit("[error] refusing to write a mislabelled CSV. Restart `ollama serve`")
+    else:
+        kv_verified = True
+
     print(f"[ollama]   {ver}    model: {args.model}")
-    print(f"[kv type]  {kv_label}" + (f"  (from OLLAMA_KV_CACHE_TYPE={kv_type_env})"
-                                      if kv_type_env else "  (explicit)"))
+    print(f"[kv type]  {kv_label}" + (f"  (declared via --kv-bytes)" if kv_bytes else ""))
+    if kv_verified:
+        print(f"[kv check] server agrees: OLLAMA_KV_CACHE_TYPE={srv_type}  ({srv_src})")
     print(f"[geometry] layers={args.layers} kv_heads={args.kv_heads} head_dim={args.head_dim}")
 
     # ---- idle baseline
@@ -374,32 +492,51 @@ def main():
     if not unload(args.model):
         print("[warning] `ollama stop` failed — VRAM may not be released. "
               "Is the ollama CLI on PATH?")
-    time.sleep(1.0)
     probe = used()
     if probe is None:
         sys.exit("[error] nvidia-smi returned nothing — check driver / PATH")
-    idle, ok = wait_idle(probe, tries=40, gpu=gpu_idx)
-    if idle is None:
-        sys.exit("[error] cannot read VRAM")
+    ok, how = wait_unloaded(args.host, args.model, threshold=probe + args.settle,
+                            tries=40, gpu=gpu_idx)
     if not ok:
-        print(f"[warning] VRAM did not settle, using {idle} MiB as baseline")
-    print(f"[idle]    {idle} MiB (desktop + other apps)\n")
+        print("[warning] model still resident after 20 s; the baseline will be too high")
+    idle = statistics.median([v for v in (_gpu_used(gpu_idx) for _ in range(5))
+                             if v is not None] or [probe])
+    print(f"[idle]    {idle} MiB (desktop + other apps, unload confirmed via {how})\n")
 
     rows = []
     hdr = (f"{'num_ctx':>8} | {'loaded MiB':>10} | {'delta MiB':>9} | "
-           f"{'theory MiB':>10} | {'load s':>6}")
+           f"{'ps MiB':>7} | {'theory':>7} | {'load s':>6} | sampling")
     print(hdr)
     print("-" * len(hdr))
 
-    for L in sorted(args.seqs):
+    # A-B-A: re-measure the smallest context at the end. The difference between the
+    # first and last reading of the SAME point is the baseline drift of this run,
+    # measured rather than assumed. It costs one extra load and settles a question
+    # that otherwise has to be argued about (see v0.1.3 in the changelog).
+    plan = [(L, False) for L in sorted(args.seqs)]
+    if args.aba and plan:
+        plan.append((plan[0][0], True))
+
+    for L, is_probe in plan:
         unload(args.model)
-        time.sleep(1.2)
-        cur_idle, ok = wait_idle(idle + args.settle, tries=40, gpu=gpu_idx)
+        ok, how = wait_unloaded(args.host, args.model, threshold=idle + args.settle,
+                                tries=60, gpu=gpu_idx)
         if not ok:
-            print(f"[warning] num_ctx={L}: model may not be fully unloaded "
-                  f"(VRAM at {cur_idle} MiB, expected <= {idle + args.settle})")
-        if cur_idle is None:
-            cur_idle = idle
+            print(f"[warning] num_ctx={L}: model still resident after 30 s. This row's")
+            print("          baseline is contaminated and its delta will read too low.")
+        # The baseline is sampled five times and taken as a median: one reading on a
+        # busy desktop is a coin flip, and it was observed swinging 32 MiB peak-to-peak
+        # over 8 seconds here. The median is the right statistic for a *quiet* state;
+        # the peak below is the right statistic for a *loaded* state, and the difference
+        # is not cosmetic - see the note at `loaded`.
+        idle_series = []
+        for _ in range(5):
+            v = used()
+            if v is not None:
+                idle_series.append(v)
+            time.sleep(0.3)
+        if idle_series:
+            cur_idle = statistics.median(idle_series)
 
         peak = [0]
         stop_flag = threading.Event()
@@ -440,24 +577,114 @@ def main():
             continue
 
         time.sleep(1.0)
-        after = used() or 0
-        loaded = max(peak[0], after)
+        if args.samples and args.samples > 1:
+            series = []
+            for _ in range(args.samples):
+                v = used()
+                if v is not None:
+                    series.append(v)
+                time.sleep(0.5)
+        else:
+            series = []
+
+        # loaded is a PEAK, not a median, and getting this backwards silently wrecked a
+        # full five-point run during v0.2 development: median shaved 300-600 MiB off the
+        # high contexts, which looked exactly like a smaller KV cost and would have been
+        # published as "the step is gone". The idle side wants a median (noise only), the
+        # loaded side wants a peak (the state IS the allocation). They are not symmetric.
+        after = used()
+        loaded = max([peak[0], after or 0] + series) if (series or after) else peak[0]
+        spread = (max(series) - min(series)) if len(series) > 1 else 0
         delta = loaded - cur_idle
         theory = theory_kv_kib(L, args.layers, args.kv_heads, args.head_dim, kv_bytes) / 1024
+        _, ps_size = api_ps(args.host, args.model)
 
-        print(f"{L:>8} | {loaded:>10} | {delta:>9} | {theory:>10.1f} | {dt:>6.1f}")
+        tag = " (probe)" if is_probe else ""
+        ps_txt = f"{ps_size:>7.0f}" if ps_size else f"{'-':>7}"
+        print(f"{L:>8} | {loaded:>10.1f} | {delta:>9.1f} | {ps_txt} | {theory:>7.0f}"
+              f" | {dt:>6.1f} | n={len(series)} spread {spread:.0f}{tag}")
         # idle_mib is the reading this row was differenced against. It used to be
         # thrown away, and that is how a 26 MiB baseline drift in one run went
         # unnoticed for two releases: `loaded - delta` was recoverable, but only if
         # somebody thought to compute it.
-        rows.append(dict(num_ctx=L, loaded_mib=loaded, delta_mib=delta,
-                         idle_mib=cur_idle,
+        rows.append(dict(num_ctx=L, loaded_mib=round(loaded, 1), delta_mib=round(delta, 1),
+                         idle_mib=cur_idle, n_samples=len(series),
+                         spread_mib=spread, is_probe=is_probe,
+                         size_vram_mib=round(ps_size, 1) if ps_size else None,
                          theory_kv_mib=round(theory, 1), load_sec=round(dt, 1)))
 
+    # ---- bracketed baselines
+    # A load sits between two idle readings: the one taken just before it and the one
+    # taken just before the NEXT load. Their mean cancels a monotone drift exactly,
+    # which a per-point baseline cannot do - and a per-point baseline that drifts is
+    # precisely what manufactures a fake step at whichever context the drift happens
+    # to step over. --aba supplies the closing bracket for the last point.
+    for i, r in enumerate(rows):
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if (nxt and r.get("idle_mib") is not None
+                and nxt.get("idle_mib") is not None and r.get("loaded_mib") is not None):
+            base = (r["idle_mib"] + nxt["idle_mib"]) / 2.0
+            r["idle_mean_mib"] = round(base, 1)
+            r["delta_bracket_mib"] = round(r["loaded_mib"] - base, 1)
+    bracketed = [r for r in rows if r.get("delta_bracket_mib") is not None
+                 and not r.get("is_probe")]
+    if len(bracketed) >= 3:
+        print()
+        print("[bracket] same loads, baseline = mean of the idle readings either side")
+        print(f"          {'num_ctx':>8} {'loaded':>8} {'idle pre':>9} {'idle post':>10}"
+              f" {'mean':>7} {'delta':>8} {'vs point':>9}")
+        for r in bracketed:
+            j = rows.index(r)
+            post = rows[j + 1]["idle_mib"] if j + 1 < len(rows) else None
+            print(f"          {r['num_ctx']:>8} {r['loaded_mib']:>8.0f}"
+                  f" {r['idle_mib']:>9} {post if post is not None else '-':>10}"
+                  f" {r['idle_mean_mib']:>7.0f} {r['delta_bracket_mib']:>8.0f}"
+                  f" {r['delta_bracket_mib'] - r['delta_mib']:>+9.0f}")
+
+    # ---- A-B-A verdict: how far did the baseline move while we were measuring?
+    probes = [r for r in rows if r.get("is_probe") and r["delta_mib"] is not None]
+    first = next((r for r in rows if not r.get("is_probe") and r["num_ctx"] == probes[0]["num_ctx"]
+                  and r["delta_mib"] is not None), None) if probes else None
+    if probes and first:
+        d = probes[0]["delta_mib"] - first["delta_mib"]
+        print()
+        print(f"[drift]   same num_ctx={first['num_ctx']} measured at the start and at the end:")
+        print(f"          {first['delta_mib']:.1f} -> {probes[0]['delta_mib']:.1f} MiB"
+              f"   ({d:+.1f} MiB)")
+        if abs(d) <= 3:
+            print("          The baseline held. Single measurements would have been fine.")
+        else:
+            print("          The baseline moved by more than the fit residual. Any structure in")
+            print("          this curve smaller than that number is not interpretable - including")
+            print("          a step, if the step is small relative to this.")
+
+    # ---- second opinion: does the runner agree with what we differenced?
+    # `ollama ps` reports what the runner allocated for itself. delta_mib should track it.
+    # When the two disagree, the desktop baseline moved between the idle sample and the
+    # loaded sample, and it is the delta - not the runner - that is lying. This check is
+    # cheap, it needs no extra state, and it would have caught the peak/median mistake
+    # that cost a full v0.2 run.
+    agree = [(r["num_ctx"], r["delta_mib"] - r["size_vram_mib"]) for r in rows
+             if r.get("size_vram_mib") and r.get("delta_mib") is not None]
+    if agree:
+        worst = max(abs(e) for _, e in agree)
+        print(f"[check]   delta_mib vs runner's size_vram: worst gap {worst:.0f} MiB"
+              f" across {len(agree)} points")
+        if worst > 200:
+            print("          WARNING: the two disagree. Either the model was not fully")
+            print("          unloaded when the baseline was taken, or the desktop moved")
+            print("          during the load. Treat these deltas as suspect.")
+        elif max(e for _, e in agree) - min(e for _, e in agree) < 60:
+            print("          The gap is constant, which is the signature of a fixed CUDA")
+            print("          context (~100 MiB) rather than a drifting baseline.")
+
     # ---- fit BEFORE writing, so the CSV always lands
-    good = [r for r in rows if r["delta_mib"] is not None]
+    # The A-B-A probe is not a data point: it exists to measure drift, and including it
+    # in the fit would double-weight the smallest context.
+    delta_key = "delta_bracket_mib" if (args.bracket and len(bracketed) >= 3) else "delta_mib"
+    good = [r for r in rows if r.get(delta_key) is not None and not r.get("is_probe")]
     xs = [r["num_ctx"] for r in good]
-    ys = [r["delta_mib"] for r in good]
+    ys = [r[delta_key] for r in good]
     a = b = r2 = float("nan")
     if len(good) >= 2:
         a, b, r2 = linfit(xs, ys)
@@ -466,13 +693,17 @@ def main():
     meta = {
         "model": args.model,
         "ollama_version": ver,
-        "kv_cache_type": (kv_type_env or kv_label),
+        "kv_cache_type": (srv_type or declared_type or kv_label),
         "kv_bytes_per_elem": kv_bytes,
+        "kv_type_verified": kv_verified,
+        "server_env_source": srv_src or "unreadable",
     }
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fields = ["num_ctx", "loaded_mib", "delta_mib", "idle_mib", "theory_kv_mib", "load_sec",
-                  "model", "ollama_version", "kv_cache_type", "kv_bytes_per_elem"]
-        w = csv.DictWriter(f, fieldnames=fields)
+        fields = ["num_ctx", "loaded_mib", "delta_mib", "delta_bracket_mib", "idle_mib",
+                  "idle_mean_mib", "n_samples", "spread_mib", "is_probe", "size_vram_mib",
+                  "theory_kv_mib", "load_sec", "model", "ollama_version", "kv_cache_type",
+                  "kv_bytes_per_elem", "kv_type_verified", "server_env_source"]
+        w = csv.DictWriter(f, fieldnames=fields, restval="")
         w.writeheader()
         for r in rows:
             w.writerow({**r, **meta})
@@ -500,6 +731,15 @@ def main():
               f"{'outside' if abs(gap) > half_a * 1024 else 'INSIDE'} the 95% CI")
     else:
         print("       (fewer than 3 samples - no interval; model still needs 3+ points)")
+    # A slope far from theory usually means the label is wrong, not that physics changed.
+    # The two candidate KV types on this machine differ by 1.88x, so a ratio near 0.68 or
+    # near 1.28 is the fingerprint of a mislabel, not of a discovery.
+    ratio_meas = a * 1024 / theory_per_tok
+    if ratio_meas < 0.70 or ratio_meas > 1.60:
+        print(f"       NOTE   : measured/theory = {ratio_meas:.2f}x is far from 1. Suspect the")
+        print("                LABEL before suspecting the hardware: a server on q8_0 that")
+        print("                is scored against f16 theory lands at 0.53x, and one on f16")
+        print("                scored against q8_0 theory lands at 1.88x.")
     # A high R^2 is a formality, not evidence: five monotone points produce it whether
     # or not a line is the right model. Say so, instead of certifying the slope.
     if r2 > 0.999:
@@ -596,6 +836,30 @@ def main():
                 print(f"         -> only {ratio:.1f}x better than the quadratic. A smooth")
                 print("            curve may be enough here; do not claim a step on this data.")
             print("-" * 72)
+
+    # The decisive comparison. Same loads, second baseline convention. If the step
+    # survives here it is the model; if it collapses, it was the desktop moving and the
+    # per-point fit was reading the room, not the GPU.
+    if len(bracketed) >= 3 and delta_key == "delta_mib":
+        bx = [r["num_ctx"] for r in bracketed]
+        by = [r["delta_bracket_mib"] for r in bracketed]
+        ba, _bb, br2 = linfit(bx, by)
+        bst = detect_step(bx, by)
+        bq = polysse(bx, by, 2)
+        print()
+        print("-" * 72)
+        print("[bracket] the same loads, drift-cancelled baseline -> refit")
+        print(f"          slope {ba * 1024:.2f} KiB/token   R^2 {br2:.5f}")
+        if bst:
+            print(f"          step at {bst['step_at']}: {bst['step']:+.1f} MiB"
+                  f"   SSE {bst['sse_lin']:.1f} -> {bst['sse']:.1f}"
+                  f"   F(1,{bst['df']}) = {bst['f']:.1f}")
+        if bq:
+            print(f"          quadratic SSE {bq[0]:.1f}")
+        print("          Compare against the per-point numbers above. A step that shrinks")
+        print("          here was the baseline moving, not the model. A step that survives")
+        print("          is real and worth quoting.")
+        print("-" * 72)
 
     print()
     print("Extrapolate to real models (f16 KV, formula 2*layers*kv_heads*head_dim*2B)")

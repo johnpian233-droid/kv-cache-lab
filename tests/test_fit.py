@@ -250,6 +250,39 @@ def main():
     check("q4_0 slope range low = 9.5", q4_lo, 9.54, 0.05)
     check("q4_0 slope range high = 10.3", q4_hi, 10.31, 0.05)
 
+    # ---------------------------------------------------------------- replication
+    # The q8_0 grid was re-measured under a different protocol, on a desktop carrying
+    # 1078 MiB more VRAM. These checks exist because a replication described only in
+    # prose rots: the claim is that the deltas moved by <= 4 MiB, and that is checkable.
+    rep_path = os.path.join(ROOT, "data", "ollama_probe_q8_0_replication.csv")
+    rx, rd, rb, rv, ridle, rver = [], [], [], [], [], False
+    with open(rep_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["is_probe"] == "True":
+                continue
+            rx.append(int(row["num_ctx"]))
+            rd.append(float(row["delta_mib"]))
+            rb.append(float(row["delta_bracket_mib"]))
+            rv.append(float(row["size_vram_mib"]))
+            ridle.append(int(row["idle_mib"]))
+            rver = rver or row["kv_type_verified"] == "True"
+
+    q8_map = dict(zip(qx, qy))
+    rep_gap = max(abs(dict(zip(rx, rd))[x] - q8_map[x]) for x in rx)
+    check("replication vs original: worst delta gap = 4 MiB", rep_gap, 4, 0)
+
+    rep_a, _, _ = probe.linfit(rx, rd)
+    rep_ba, _, _ = probe.linfit(rx, rb)
+    check("replication straight slope = 19.17", rep_a * 1024, 19.17, 0.02)
+    check("replication bracketed slope = 19.09", rep_ba * 1024, 19.09, 0.02)
+
+    vr_gaps = [a - b for a, b in zip(rd, rv)]
+    check("delta - size_vram gap is flat (spread <= 10 MiB)",
+          max(vr_gaps) - min(vr_gaps), 10, 0)
+    check("replication idle spread = 9 MiB", max(ridle) - min(ridle), 9, 0)
+    check("replication KV label was verified against the server",
+          1.0 if rver else 0.0, 1.0, 0)
+
     # ---------------------------------------------------------------- extrapolation
     def per_token(layers, kv_heads, head_dim):
         return 2 * layers * kv_heads * head_dim * 2 / 1024.0   # KiB

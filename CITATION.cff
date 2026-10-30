@@ -14,15 +14,22 @@ abstract: >-
   The q8_0 run is reported as a range rather than a point (slope 16.5-17.3 KiB/token)
   because its idle VRAM baseline drifted 26 MiB during measurement; the f16 run held to
   1 MiB and is unaffected. No claim is made that the overhead differs between precisions.
-  Scope: memory only, no throughput, no output quality, no repeated measurements. The
-  repository ships the measuring script, the raw CSVs, and 83 self-checks that recompute
-  every quoted number without a GPU.
+  The q8_0 grid was subsequently re-measured under a different protocol - median-sampled
+  idles, peak-sampled loads, unload confirmed through the Ollama API rather than a VRAM
+  threshold, and the KV cache type read from the server's own environment - on a desktop
+  carrying 1078 MiB more VRAM. Every one of the five deltas landed within 4 MiB of the
+  original, the slope moved 19.08 to 19.09 KiB/token, and the step moved 67.1 to 59.8 MiB
+  at the same location. The f16 grid was not re-run, because that would require restarting
+  the server with a different OLLAMA_KV_CACHE_TYPE.
+  Scope: memory only, no throughput, no output quality, no repeated measurements per grid
+  point. The repository ships the measuring script, the raw CSVs, the replication CSV, and
+  89 self-checks that recompute every quoted number without a GPU.
 authors:
   - family-names: "Xia"
     given-names: "Kong"
     alias: "johnpian233-droid"
     website: "https://github.com/johnpian233-droid"
-version: "0.1.3"
+version: "0.2.0"
 date-released: "2026-10-30"
 license: MIT
 repository-code: "https://github.com/johnpian233-droid/kv-cache-lab"

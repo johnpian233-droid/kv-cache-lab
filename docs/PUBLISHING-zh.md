@@ -249,7 +249,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > optimistic), no output-quality test, and **I do not know what causes the step** — three candidate
 > mechanisms are listed, none confirmed.
 >
-> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 83 assertions that re-derive every number in the
+> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 89 assertions that re-derive every number in the
 > README without a GPU, including the F test.
 
 **注意最后一段**：把"我的结论脆弱在哪"主动写在帖子里。这是唯一能让 HN 那群人不喷你的方式，
@@ -281,7 +281,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > 我没搞定的也写在 README 里：每个点只加载一次（没有纯重复，误差棒偏乐观）、
 > q8_0 输出质量没测、**台阶机制不明**（列了三个候选，一个都没确认）。
 >
-> 脚本约 620 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，83 项断言，
+> 脚本约 880 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，89 项断言，
 > 不插显卡就能把 README 里每个数字复算一遍，包括那个 F 检验。地址：<link>
 
 ### 3.4 发帖纪律
