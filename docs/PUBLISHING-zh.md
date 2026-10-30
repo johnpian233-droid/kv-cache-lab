@@ -232,7 +232,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 >
 > The residuals are −17, −24, +36, +19, −15. They do not scatter, they **arc**, and the peak sits
 > exactly on 8192. Add a one-time level step there and SSE drops from 2731 to **2.0**
-> (F(1,2) = 2748 against a 5% critical value of 18.5). The slopes move to **29.99** and **17.31**.
+> (F(1,2) = 2748 against a 5% critical value of 18.513). The slopes move to **29.99** and **17.31**.
 > The step model predicts the 32K measurement to within **0.1 MiB**; the straight line was off by
 > 14.6, and that error *is* the step it refused to model.
 >
@@ -249,7 +249,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > optimistic), no output-quality test, and **I do not know what causes the step** — three candidate
 > mechanisms are listed, none confirmed.
 >
-> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 59 assertions that re-derive every number in the
+> Repo: <link> — raw CSVs plus `tests/test_fit.py`, 72 assertions that re-derive every number in the
 > README without a GPU, including the F test.
 
 **注意最后一段**：把"我的结论脆弱在哪"主动写在帖子里。这是唯一能让 HN 那群人不喷你的方式，
@@ -267,7 +267,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > - q8_0：**19.08 ± 1.05 KiB/token**（理论 14.88）
 >
 > 然后我去看了残差：−17、−24、+36、+19、−15。这不是散的，是一条**弧**，峰顶正落在 8192。
-> 在那个位置加一个一次性台阶，SSE 从 2731 掉到 **2.0**（F(1,2) = 2748，5% 临界值 18.5），
+> 在那个位置加一个一次性台阶，SSE 从 2731 掉到 **2.0**（F(1,2) = 2748，5% 临界值 18.513），
 > 斜率变成 **29.99** 和 **17.31**。台阶模型能把 32K 的实测值预测到 **0.1 MiB** 以内，
 > 而单直线差了 14.6——那个误差正好就是它拒绝建模的台阶。
 >
@@ -281,7 +281,7 @@ gh release create v0.1.0 docs/kv-cache-report-zh.pdf ^
 > 我没搞定的也写在 README 里：每个点只加载一次（没有纯重复，误差棒偏乐观）、
 > q8_0 输出质量没测、**台阶机制不明**（列了三个候选，一个都没确认）。
 >
-> 脚本约 400 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，59 项断言，
+> 脚本约 400 行、纯标准库、不要 PyTorch。仓库还有 `tests/test_fit.py`，72 项断言，
 > 不插显卡就能把 README 里每个数字复算一遍，包括那个 F 检验。地址：<link>
 
 ### 3.4 发帖纪律

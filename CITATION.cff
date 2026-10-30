@@ -5,19 +5,19 @@ abstract: >-
   A single-script measurement of what KV cache quantization saves in VRAM on a consumer
   GPU. A straight-line fit across five context lengths gives 32.11 +/- 1.24 KiB/token for
   f16 and 19.08 +/- 1.05 for q8_0 on an RTX 4060 Laptop with Qwen2.5-1.5B - but the
-  residuals reject that model (F = 2748 against a 5% critical value of 18.5). Adding a
+  residuals reject that model (F = 2748 against a 5% critical value of 18.513). Adding a
   one-time 67.1 MiB allocation step at context 8192 fits the same data to within 1 MiB and
   moves the slopes to 29.99 and 17.31 KiB/token. The per-token overhead over theory is
   therefore about 2.0 KiB rather than the 4.1 KiB a naive fit reports; half of the
   difference is the allocation step annualised over 32K tokens. The repository ships the
-  measuring script, the raw CSVs, and 59 self-checks that recompute every quoted number
-  without a GPU.
+  measuring script, the raw CSVs, and 72 self-checks that recompute every quoted number
+  without a GPU. A quadratic fit, which carries the same three parameters as the step model, is rejected by a factor of 486 on f16 and 6.6 on q8_0, so the bend is a jump rather than curvature.
 authors:
   - family-names: "Xia"
     given-names: "Kong"
     alias: "johnpian233-droid"
     website: "https://github.com/johnpian233-droid"
-version: "0.1.0"
+version: "0.1.2"
 date-released: "2026-10-30"
 license: MIT
 repository-code: "https://github.com/johnpian233-droid/kv-cache-lab"

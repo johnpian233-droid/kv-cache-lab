@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 TIGHT = 0.005     # exact arithmetic (formulas)
-LOOSE = 0.05      # values rounded to 2 decimals in the README
+LOOSE = 0.01      # values printed to 2 decimals in the README
 
 CHECKS = []
 
@@ -115,10 +115,31 @@ def main():
     check("f16 step size = +67.1 MiB", fst["step"], 67.1, 0.2)
     check("q8_0 slope with step = 17.31", qst["slope"] * 1024, 17.31, LOOSE)
     check("q8_0 step size = +56.2 MiB", qst["step"], 56.2, 0.2)
-    check("f16 step beats line at 5% (F > 18.5)", 1.0 if fst["f"] > 18.5 else 0.0, 1.0, 0)
-    check("q8_0 step beats line at 5% (F > 18.5)", 1.0 if qst["f"] > 18.5 else 0.0, 1.0, 0)
+    check("f16 step beats line at 5%", 1.0 if fst["f"] > probe.f_critical_95(fst["df"]) else 0.0, 1.0, 0)
+    check("q8_0 step beats line at 5%", 1.0 if qst["f"] > probe.f_critical_95(qst["df"]) else 0.0, 1.0, 0)
     check("f16 steady-state slope = 30.00", fst["slope_hi"] * 1024, 30.00, 0.01)
     check("q8_0 steady-state slope = 17.30", qst["slope_hi"] * 1024, 17.30, 0.01)
+
+    # the statistics themselves, not just the coefficients derived from them:
+    # if df2 were ever computed as n-2 instead of n-3, F would be 1832 and still
+    # clear the threshold, so SSE and F each need their own assertion.
+    check("f16 step-model SSE = 2.0", fst["sse"], 2.0, 0.1)
+    check("q8_0 step-model SSE = 57.8", qst["sse"], 57.8, 0.1)
+    check("f16 F = 2748", fst["f"], 2748.0, 1.0)
+    check("q8_0 F = 66.2", qst["f"], 66.2, 0.1)
+    check("f16 step-model df = 2", fst["df"], 2, 0)
+    check("F(1,2) 5% critical value = 18.513", probe.f_critical_95(2), 18.513, 0.001)
+
+    # a step and a smooth curve both bend five points; the quadratic has the same
+    # three parameters as the step model, so SSE compares with no penalty term
+    fq = probe.polysse(fx, fy, 2)
+    qq = probe.polysse(qx, qy, 2)
+    check("f16 quadratic SSE = 966.4", fq[0], 966.4, 0.1)
+    check("q8_0 quadratic SSE = 380.5", qq[0], 380.5, 0.1)
+    check("f16 step beats quadratic by >100x", 1.0 if fq[0] / fst["sse"] > 100 else 0.0, 1.0, 0)
+    check("q8_0 step beats quadratic by >5x", 1.0 if qq[0] / qst["sse"] > 5 else 0.0, 1.0, 0)
+    check("f16 quadratic still has a 24 MiB bump",
+          max(abs(r) for r in fq[1]), 23.80, 0.05)
 
     # the step, expressed per token of the largest context, is what the naive
     # straight line was reporting as per-token cost
@@ -129,8 +150,9 @@ def main():
     # ---------------------------------------------------------------- corrected toll
     f_toll = fst["slope"] * 1024 - t_f16
     q_toll = qst["slope"] * 1024 - t_q8
-    check("f16 toll with step model = +2.00", f_toll, 2.00, LOOSE)
-    check("q8_0 toll with step model = +2.42", q_toll, 2.42, LOOSE)
+    check("f16 toll with step model = +1.99", f_toll, 1.99, LOOSE)
+    check("q8_0 toll with step model = +2.43", q_toll, 2.43, LOOSE)
+    check("toll gap between precisions = 0.44", abs(q_toll - f_toll), 0.44, LOOSE)
 
     # ---------------------------------------------------------------- ratios
     check("measured/theory f16 = 1.15x", fa * 1024 / t_f16, 1.15, LOOSE)
@@ -141,8 +163,6 @@ def main():
     # written as "x 32" / "x 128" in the README because KiB/token x K-tokens = MiB).
     v32_f = fb + fa * 32768
     v32_q = qb + qa * 32768
-    v128_f = fb + fa * 131072
-    v128_q = qb + qa * 131072
 
     check("32K f16 plain line = 2146.6 MiB", v32_f, 2146.6, 0.1)
     check("32K q8_0 plain line = 1728.4 MiB", v32_q, 1728.4, 0.1)
@@ -157,7 +177,9 @@ def main():
 
     check("32K f16 line+step = 2131.9 MiB", s32_f, 2131.9, 0.1)
     check("32K q8_0 line+step = 1716.1 MiB", s32_q, 1716.1, 0.1)
-    check("step model predicts 32K f16 to 0.1 MiB", abs(s32_f - fy[-1]), 0.1, 0.06)
+    check("32K saving by step model = 415.8 MiB", s32_f - s32_q, 415.8, 0.1)
+    check("step model predicts 32K f16 within 0.2 MiB",
+          1.0 if abs(s32_f - fy[-1]) <= 0.2 else 0.0, 1.0, 0)
     check("step model beats plain line at 32K (f16)", 1.0 if abs(s32_f - fy[-1]) < abs(v32_f - fy[-1]) else 0.0, 1.0, 0)
 
     # the numbers the README actually quotes

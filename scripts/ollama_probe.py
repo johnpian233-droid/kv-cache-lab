@@ -160,6 +160,20 @@ _T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
         19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064,
         25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
 
+# Upper 5% points of F(1, df2). The step model spends exactly one extra parameter,
+# so df1 is always 1 and the table only needs df2 = n - 3. Hard-coding a single
+# number here would be wrong for any grid other than five points: at n=4 the
+# critical value is 161, at n=7 it is 6.61, and a fixed 18.5 flips the verdict.
+_F95_DF1_1 = {1: 161.448, 2: 18.513, 3: 10.128, 4: 7.709, 5: 6.608,
+              6: 5.987, 7: 5.591, 8: 5.318, 9: 5.117, 10: 4.965,
+              11: 4.844, 12: 4.747, 13: 4.667, 14: 4.600, 15: 4.543,
+              16: 4.494, 17: 4.451, 18: 4.414, 19: 4.381, 20: 4.351}
+
+
+def f_critical_95(df2):
+    """5% critical value of F(1, df2), or None when df2 is outside the table."""
+    return _F95_DF1_1.get(df2)
+
 
 def fit_uncertainty(xs, ys, a, b):
     """Standard error of slope/intercept and 95% CI half-widths.
@@ -266,6 +280,31 @@ def stepfit(xs, ys, step_at):
         "sse_lin": sse_lin, "df_lin": n - 2, "slope_hi": slope_hi,
         "n_left": len(left), "n_right": len(right),
     }
+
+
+def polysse(xs, ys, deg):
+    """Least-squares polynomial of degree `deg`. Returns (sse, residuals) or None.
+
+    Why this exists. A one-time step and a smooth curve both bend five points, and
+    a step model with three parameters can look like a cheap way to fake curvature.
+    If a quadratic - also three parameters - absorbs the same bump, then the "step"
+    is curvature wearing a different name and the physical story behind it is wrong.
+    The two models are non-nested but equally sized, so SSE can be compared directly
+    with no penalty term. Fitting both is the only way to tell a jump from a bend.
+
+    Fitted in scaled coordinates: raw `num_ctx` runs to 32768, and the normal
+    equations for a quadratic on x^4 are hopelessly ill-conditioned unscaled.
+    """
+    n = deg + 1
+    xm = float(max(xs)) or 1.0
+    u = [x / xm for x in xs]
+    a = [[sum(x ** (i + j) for x in u) for j in range(n)] for i in range(n)]
+    rhs = [sum(y * x ** i for x, y in zip(u, ys)) for i in range(n)]
+    coef = _solve(a, rhs)
+    if coef is None:
+        return None
+    res = [y - sum(c * x ** i for i, c in enumerate(coef)) for x, y in zip(u, ys)]
+    return sum(r * r for r in res), res
 
 
 def detect_step(xs, ys):
@@ -465,9 +504,10 @@ def main():
     print("=" * 72)
 
     # A high R^2 does not mean the line is the right model: five monotone points
-    # will look linear whatever the truth is. So fit the alternative explicitly.
+    # can look linear whatever the truth is. So fit the alternative explicitly.
     st = detect_step(xs, ys)
     if st:
+        fcrit = f_critical_95(st["df"])
         print()
         print("-" * 72)
         print(f"[step] testing a one-time level shift, best location num_ctx={st['step_at']}")
@@ -478,14 +518,47 @@ def main():
         if st["slope_hi"] == st["slope_hi"]:
             print(f"       slope from points >= {st['step_at']} only: "
                   f"{st['slope_hi'] * 1024:.2f} KiB/token")
-        if st["f"] > 18.5:
+        if fcrit is None:
+            print(f"       -> F critical value unknown for df2={st['df']} (table covers 1..20);")
+            print("          judge this one by eye, not by the default threshold.")
+        elif st["f"] > fcrit:
             spread = (st["slope"] - st["slope_hi"]) * 1024
-            print("       -> the step wins. The straight-line slope is inflated by")
-            print(f"          {spread:+.2f} KiB/token, i.e. the step divided by the largest")
-            print("          context. Do not quote the straight-line slope as per-token cost.")
+            print(f"       -> F {st['f']:.1f} > {fcrit:.3f} at 5%: the step wins.")
+            print(f"          The straight-line slope is inflated by {spread:+.2f} KiB/token,")
+            print("          i.e. the step divided by the largest context. Do not quote the")
+            print("          straight-line slope as per-token cost.")
+            # The location was chosen by searching, so the nominal 5% is optimistic.
+            print("          Caveat: the step location was picked by minimising SSE, so this")
+            print("          p-value is not adjusted for that search. With 3 candidate")
+            print("          positions the effective false-positive rate is nearer 14%.")
         else:
-            print("       -> the step does not earn its parameter. Straight line stands.")
+            print(f"       -> F {st['f']:.1f} <= {fcrit:.3f} at 5%: the step does not earn")
+            print("          its parameter. Straight line stands.")
         print("-" * 72)
+
+        # A step and a smooth curve both bend five points. Same parameter count,
+        # so SSE compares directly with no penalty term.
+        quad = polysse(xs, ys, 2)
+        if quad and quad[0]:
+            pred = [st["intercept"] + st["slope"] * x
+                    + st["step"] * (1 if x >= st["step_at"] else 0) for x in xs]
+            sres = [y - p for y, p in zip(ys, pred)]
+            print()
+            print("[curves] jump or curvature? same parameter count, so compare SSE directly")
+            print(f"         {'model':<15}{'params':>7}{'SSE':>11}{'max|resid|':>12}")
+            for label, k, sse, res in (("straight line", 2, st["sse_lin"], None),
+                                       ("quadratic", 3, quad[0], quad[1]),
+                                       ("line + step", 3, st["sse"], sres)):
+                mx = f"{max(abs(r) for r in res):.2f}" if res else "-"
+                print(f"         {label:<15}{k:>7}{sse:>11.1f}{mx:>12}")
+            ratio = quad[0] / st["sse"] if st["sse"] else float("inf")
+            if ratio > 5:
+                print(f"         -> the step fits {ratio:.0f}x better than the quadratic:")
+                print("            the bend is a jump, not a curve.")
+            else:
+                print(f"         -> only {ratio:.1f}x better than the quadratic. A smooth")
+                print("            curve may be enough here; do not claim a step on this data.")
+            print("-" * 72)
 
     print()
     print("Extrapolate to real models (f16 KV, formula 2*layers*kv_heads*head_dim*2B)")
